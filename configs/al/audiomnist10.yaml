@@ -1,0 +1,7 @@
+n_cycles: 25
+init_sample_budget: 20
+init_pair_budget: 20
+actual_sample_budget: 20
+actual_pair_budget: 20
+subsampling_size: 5000
+fully_unlabeled_cand: False

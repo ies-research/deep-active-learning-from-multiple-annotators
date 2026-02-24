@@ -1,0 +1,6 @@
+_target_: src.embedder.TorchHFTextEmbedder
+model_id: sentence-transformers/all-mpnet-base-v2
+cache_dir: /home/datasets/.hf_embedders
+pooling: mean
+dtype: float32
+device: null

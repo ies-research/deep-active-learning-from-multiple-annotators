@@ -1,0 +1,10 @@
+_target_: src.dataset.HFDatasetSpec
+source: skit-ai/skit-s2i
+source_kind: hub_or_local_script
+cache_dir: /home/datasets
+train_splits: [train]
+test_split: test
+x_key: audio
+y_key: intent_class
+z_key: null
+trust_remote_code: false

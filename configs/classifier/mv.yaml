@@ -1,0 +1,4 @@
+_target_: src.classifier.AggregateClassifier
+_convert_: all
+aggregate_function: "mv"
+sample_dtype: float32

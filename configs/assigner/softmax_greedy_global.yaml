@@ -1,0 +1,6 @@
+_target_: src.assigner.GreedyPairAssigner
+selection: "softmax"
+coverage: "none"
+temperature_max: 0.01
+temperature_min: 0.001
+temperature_T: 10

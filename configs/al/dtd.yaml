@@ -1,0 +1,5 @@
+n_cycles: 25
+init_pair_budget: 120
+actual_pair_budget: 120
+max_candidate_samples: 5000
+fully_unlabeled_cand: False

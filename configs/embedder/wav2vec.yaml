@@ -1,0 +1,7 @@
+_target_: src.embedder.TorchHFAudioEmbedder
+model_id: facebook/wav2vec2-large-960h
+cache_dir: /home/datasets/.hf_embedders
+pooling: mean
+dtype: float32
+device: null
+sampling_rate: 16000

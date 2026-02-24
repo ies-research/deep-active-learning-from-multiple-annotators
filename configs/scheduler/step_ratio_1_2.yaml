@@ -1,0 +1,4 @@
+_target_: src.scheduler.StepRatioScheduler
+_convert_: all
+default: 1
+schedule: [{"start": 20, "end": 24, "value": 2.0}]

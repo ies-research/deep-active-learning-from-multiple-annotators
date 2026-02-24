@@ -1,0 +1,3 @@
+_target_: src.assigner.GreedyPairAssigner
+selection: "greedy"
+coverage: "none"

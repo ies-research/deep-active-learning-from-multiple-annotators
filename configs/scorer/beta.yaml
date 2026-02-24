@@ -1,0 +1,7 @@
+_target_: src.scorer.BetaModelPairScorer
+mean: 0.9
+strength: 10
+gamma: "median"
+annotator_similarity: "rbf"
+annotator_gamma: "median"
+annotator_sim_power: 1

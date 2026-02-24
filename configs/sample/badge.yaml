@@ -1,0 +1,3 @@
+_target_: skactiveml.pool.Badge
+_convert_: all
+clf_embedding_flag_name: {"extra_outputs": ["embeddings"]}

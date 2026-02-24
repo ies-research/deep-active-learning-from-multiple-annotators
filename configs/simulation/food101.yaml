@@ -1,0 +1,54 @@
+_target_: src.dataset.CrowdSimConfig
+
+seed: 0
+n_annotators: 50
+allocation: deterministic
+missing_rate: 0.0
+missing_value: -1
+
+use_clusters: true
+n_clusters: 202
+kmeans_seed: 0
+k_means_max_iter: 100
+k_means_batch_size: 1024
+
+# z_train caching (independent of embedder)
+cache_dir: /home/datasets/.hf_crowd_cache
+cache_version: 1
+cache_store_metadata: true
+
+types:
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: expert
+    proportion: 0.10
+    p_mean: 0.8020
+    p_std: 0.10
+    s_mean: 100
+    s_std: 0.20
+    kappa_mean: 100
+    kappa_std: 0.20
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: competent
+    proportion: 0.50
+    p_mean: 0.6535
+    p_std: 0.15
+    s_mean: 50
+    s_std: 0.30
+    kappa_mean: 50
+    kappa_std: 0.30
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: novice
+    proportion: 0.30
+    p_mean: 0.5050
+    p_std: 0.20
+    s_mean: 25
+    s_std: 0.40
+    kappa_mean: 25
+    kappa_std: 0.40
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: spammer_uniform
+    proportion: 0.10
+    spammer_mode: uniform

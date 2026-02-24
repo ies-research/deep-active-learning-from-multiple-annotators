@@ -1,0 +1,6 @@
+_target_: src.assigner.GreedyPairAssigner
+selection: "epsilon_greedy"
+coverage: "none"
+epsilon_max: 0.2
+epsilon_min: 0.01
+epsilon_T: 10

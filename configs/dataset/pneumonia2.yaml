@@ -1,0 +1,10 @@
+_target_: src.dataset.HFDatasetSpec
+source: danjacobellis/pneumoniamnist_224
+source_kind: hub_or_local_script
+cache_dir: /home/datasets
+train_splits: [train]
+test_split: test
+x_key: image
+y_key: label
+z_key: null
+trust_remote_code: false

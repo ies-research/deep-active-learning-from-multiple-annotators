@@ -1,0 +1,5 @@
+_target_: src.dataset.PipelineConfig
+batch_size: 64
+cache_dir: /home/datasets/.hf_embed_cache
+memmap_dtype: float32
+mmap_mode: r

@@ -1,0 +1,28 @@
+defaults:
+  - al: dtd
+  - classifier: annot_mix
+  - dataset: dtd
+  - embedder: dinov2
+  - pipeline: default
+  - simulation: dtd
+  - module: mlp
+  - training: default
+  - scheduler: step_ratio_1
+  - sample@sample.init: typi_clust
+  - sample@sample.actual: margin
+  - scorer@scorer.init: random
+  - scorer@scorer.actual: ig_gain
+  - assigner@assigner.init: quota_sample
+  - assigner@assigner.actual: greedy_sample
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+  - _self_
+experiment_name: "final-test"
+results_path: "mlflow" # TODO: Replace path for saving results via `mlflow`.
+device: "cuda"
+missing_label: -1
+seed: 1
+hydra:
+  run:
+    dir: .
+  output_subdir: null
