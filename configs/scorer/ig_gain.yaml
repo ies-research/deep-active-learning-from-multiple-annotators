@@ -1,1 +1,11 @@
 _target_: src.scorer.IGKernelChannelPairScorer
+mean: 0.9
+strength: 10.0
+gamma_x: "median"
+gamma_a: "median"
+dirichlet_strength: 1.0
+use_ess_beta: true
+tau_beta: 1.0
+top_m: 10
+n_theta_samples: 1
+sample_g: true
