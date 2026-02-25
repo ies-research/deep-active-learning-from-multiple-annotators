@@ -18,14 +18,30 @@ def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 
 class IGKernelChannelPairScorer(PairScorer):
     """
-    Pair scorer using information gain under a kernel-smoothed channel model.
+    Pair scorer using information gain under a kernel-smoothed annotator model.
 
-    For a candidate pair (x, a):
+    For a candidate pair (x, a), this scorer supports multiple channel variants:
+
+    - "channel" (default, historical):
         Z ~ r(·) = p(Z|x)                 from clf
         theta ~ Beta(alpha(x,a), beta(x,a))
         g ~ Dirichlet(gamma(x,a))
         Y = Z              with prob theta
         Y ~ Categorical(g) with prob (1-theta)
+
+    - "scalar_uniform_confusion":
+        estimate a single accuracy scalar theta and define a proper confusion matrix
+        with uniform off-diagonal mass:
+            C[z,z] = theta
+            C[z,y!=z] = (1-theta)/(K-1)
+
+    - "diag_uniform_confusion":
+        estimate per-class diagonal accuracies theta_z and define rows
+            C[z,z] = theta_z
+            C[z,y!=z] = (1-theta_z)/(K-1)
+
+    - "full_confusion":
+        estimate the full row-stochastic confusion matrix C[z,y].
 
     Kernel-smoothed posterior parameters are built from observed annotations
     (x_i, a_i, y_i):
@@ -39,6 +55,7 @@ class IGKernelChannelPairScorer(PairScorer):
 
     - Dirichlet label model (kernel-weighted label counts)
         gamma_k(x,a) = gamma0_k + sum_i w_i(x,a) * 1[y_i = k]
+      (optionally ESS-scaled via `use_ess_label_dirichlet=True`)
 
     where the pair weight factorizes as:
         w_i(x,a) = k_x(x_i, x) * k_a(a_i, a)
@@ -53,27 +70,48 @@ class IGKernelChannelPairScorer(PairScorer):
 
     Parameters
     ----------
-    mean : float, default=0.95
-        Prior mean for theta.
-    strength : float, default=10.0
-        Prior strength for theta: alpha0 = mean*strength, beta0=(1-mean)*strength.
+    accuracy_mean : float, default=0.95
+        Prior mean accuracy. Used as the Beta prior mean for variants with scalar/diagonal
+        accuracies and as the diagonal prior mean of each Dirichlet confusion row for
+        `channel_variant="full_confusion"`.
+    accuracy_strength : float, default=10.0
+        Prior strength for accuracy parameters. Used for Beta priors in variants with
+        scalar/diagonal accuracies and as the total concentration per confusion row in
+        `channel_variant="full_confusion"`.
     gamma_x : float or {"median","mean","minimum"}, default="median"
         Bandwidth selection for the sample-embedding RBF kernel.
     gamma_a : float or {"median","mean","minimum"}, default="median"
         Bandwidth selection for the annotator-embedding RBF kernel (if used).
-    dirichlet_strength : float, default=1.0
-        Symmetric Dirichlet prior concentration. Each class gets gamma0 = dirichlet_strength / K.
+    use_annotator_embeddings : bool, default=True
+        If True, request and use global annotator embeddings (when provided by `clf`)
+        to smooth across annotators. If False, always use exact annotator identity
+        weighting.
+    channel_label_dirichlet_strength : float, default=1.0
+        Symmetric Dirichlet prior concentration for the fallback label distribution `g`
+        in `channel_variant="channel"` only.
+    channel_variant : {"channel","scalar_uniform_confusion","diag_uniform_confusion","full_confusion"}, default="channel"
+        Annotator noise parameterization used for IG computation.
     use_ess_beta : bool, default=False
         If True, map the kernel-weighted correctness evidence to a Beta posterior using
         ESS-based concentration instead of raw weighted counts.
     tau_beta : float, default=1.0
         Discount factor for ESS-based Beta concentration (only used if `use_ess_beta=True`).
+    use_ess_label_dirichlet : bool, default=False
+        If True, map kernel-weighted label evidence to a Dirichlet posterior using
+        ESS-based concentration instead of raw weighted counts.
+    tau_label_dirichlet : float, default=1.0
+        Discount factor for ESS-based Dirichlet concentration (only used if
+        `use_ess_label_dirichlet=True`).
     top_m : int or None, default=2
         If not None, approximate IG in top-M + "other" reduced label space.
+        Currently used only for `channel_variant="channel"`.
     n_theta_samples : int, default=1
-        Number of Beta(theta) draws. If <=0, use the posterior mean of theta.
-    sample_g : bool, default=False
-        If True, sample g from Dirichlet; otherwise use its posterior mean.
+        Number of Monte Carlo draws for latent channel parameters. For variants with
+        Beta accuracies, this controls Beta draws. If <=0, posterior means are used
+        (when applicable).
+    sample_label_dirichlet : bool, default=False
+        If True, sample Dirichlet-distributed label parameters (`g` in `channel`,
+        confusion rows in `full_confusion`); otherwise use posterior means.
     random_state : None or int, default=None
         Seed for reproducibility.
     """
@@ -81,29 +119,46 @@ class IGKernelChannelPairScorer(PairScorer):
     def __init__(
         self,
         *,
-        mean: float = 0.95,
-        strength: float = 10.0,
+        accuracy_mean: float = 0.95,
+        accuracy_strength: float = 10.0,
         gamma_x="median",
         gamma_a="median",
-        dirichlet_strength: float = 1.0,
+        use_annotator_embeddings: bool = True,
+        channel_label_dirichlet_strength: float = 1.0,
+        channel_variant: str = "channel",
         use_ess_beta: bool = False,
         tau_beta: float = 1.0,
+        use_ess_label_dirichlet: bool = False,
+        tau_label_dirichlet: float = 1.0,
         top_m: int | None = 2,
         n_theta_samples: int = 1,
-        sample_g: bool = False,
+        sample_label_dirichlet: bool = False,
         random_state=None,
     ):
-        self.mean = float(mean)
-        self.strength = float(strength)
+        self.accuracy_mean = float(accuracy_mean)
+        self.accuracy_strength = float(accuracy_strength)
         self.gamma_x = gamma_x
         self.gamma_a = gamma_a
-        self.dirichlet_strength = float(dirichlet_strength)
+        self.use_annotator_embeddings = bool(use_annotator_embeddings)
+        self.channel_label_dirichlet_strength = float(
+            channel_label_dirichlet_strength
+        )
+        self.channel_variant = str(channel_variant)
         self.use_ess_beta = bool(use_ess_beta)
         self.tau_beta = float(tau_beta)
+        self.use_ess_label_dirichlet = bool(use_ess_label_dirichlet)
+        self.tau_label_dirichlet = float(tau_label_dirichlet)
         self.top_m = top_m
         self.n_theta_samples = int(n_theta_samples)
-        self.sample_g = bool(sample_g)
+        self.sample_label_dirichlet = bool(sample_label_dirichlet)
         self.random_state = check_random_state(random_state)
+
+        if not (0.0 < self.accuracy_mean < 1.0):
+            raise ValueError("accuracy_mean must be in (0, 1)")
+        if self.accuracy_strength <= 0:
+            raise ValueError("accuracy_strength must be > 0")
+        if self.channel_label_dirichlet_strength <= 0:
+            raise ValueError("channel_label_dirichlet_strength must be > 0")
 
     def _compute(
         self,
@@ -125,13 +180,37 @@ class IGKernelChannelPairScorer(PairScorer):
         K = len(classes)
         if K < 2:
             raise ValueError("IG requires at least 2 classes.")
+        valid_variants = {
+            "channel",
+            "scalar_uniform_confusion",
+            "diag_uniform_confusion",
+            "full_confusion",
+        }
+        if self.channel_variant not in valid_variants:
+            raise ValueError(
+                f"Unknown channel_variant={self.channel_variant!r}. "
+                f"Expected one of {sorted(valid_variants)}."
+            )
 
-        # Candidate sample posteriors/embeddings and annotator embeddings.
-        r_cand, X_cand_emb, A_pred = clf.predict_proba(
+        # Candidate sample posteriors/embeddings and (optionally) annotator embeddings.
+        cand_extra_outputs = ["embeddings"]
+        if self.use_annotator_embeddings:
+            cand_extra_outputs.append("annotator_embeddings")
+        cand_out = clf.predict_proba(
             X[sample_indices],
-            extra_outputs=["embeddings", "annotator_embeddings"],
+            extra_outputs=cand_extra_outputs,
         )
-        A_pred = None
+        if not isinstance(cand_out, (tuple, list)):
+            raise ValueError(
+                "clf.predict_proba must return a tuple when extra_outputs are requested."
+            )
+        if len(cand_out) < 2:
+            raise ValueError(
+                "clf.predict_proba returned too few outputs for requested embeddings."
+            )
+        r_cand = cand_out[0]
+        X_cand_emb = cand_out[1]
+        A_pred = cand_out[2] if (self.use_annotator_embeddings and len(cand_out) > 2) else None
         r_cand = np.asarray(r_cand, dtype=float)
         r_cand = np.clip(r_cand, 1e-15, 1.0)
         r_cand = r_cand / np.maximum(r_cand.sum(axis=1, keepdims=True), 1e-15)
@@ -157,6 +236,8 @@ class IGKernelChannelPairScorer(PairScorer):
             X[obs_s], extra_outputs=["embeddings"]
         )
         r_obs = np.asarray(r_obs, dtype=float)
+        r_obs = np.clip(r_obs, 1e-15, 1.0)
+        r_obs = r_obs / np.maximum(r_obs.sum(axis=1, keepdims=True), 1e-15)
         X_obs_emb = _l2_normalize(np.asarray(X_obs_emb, dtype=float))
         m_obs = r_obs[np.arange(obs_s.size), y_obs]
         m_obs = np.clip(m_obs, 0.0, 1.0)
@@ -184,9 +265,16 @@ class IGKernelChannelPairScorer(PairScorer):
         # Sample-kernel weights from observed pairs to candidate samples.
         Kx_obs_cand = rbf_kernel(X_obs_emb, X_cand_emb, gamma=gamma_x_val)
 
-        alpha0 = self.mean * self.strength
-        beta0 = (1.0 - self.mean) * self.strength
-        gamma0 = np.full(K, self.dirichlet_strength / K, dtype=float)
+        alpha0 = self.accuracy_mean * self.accuracy_strength
+        beta0 = (1.0 - self.accuracy_mean) * self.accuracy_strength
+        gamma0 = np.full(
+            K, self.channel_label_dirichlet_strength / K, dtype=float
+        )
+        delta0_full = self._full_confusion_dirichlet_prior(
+            K=K,
+            accuracy_mean=self.accuracy_mean,
+            row_strength=self.accuracy_strength,
+        )
 
         U = np.empty(
             (len(sample_indices), len(annotator_indices)), dtype=float
@@ -202,32 +290,83 @@ class IGKernelChannelPairScorer(PairScorer):
 
             K_obs_cand = Kx_obs_cand * Ka_obs[:, None]
 
-            alpha, beta, _ = self.parzen_beta_posterior(
-                K=K_obs_cand,
-                p=m_obs,
-                alpha0=alpha0,
-                beta0=beta0,
-                use_ess=self.use_ess_beta,
-                tau=self.tau_beta,
-            )
+            if self.channel_variant in {
+                "channel",
+                "scalar_uniform_confusion",
+                "diag_uniform_confusion",
+            }:
+                alpha, beta, _ = self.parzen_beta_posterior(
+                    K=K_obs_cand,
+                    p=m_obs,
+                    alpha0=alpha0,
+                    beta0=beta0,
+                    use_ess=self.use_ess_beta,
+                    tau=self.tau_beta,
+                )
+            else:
+                alpha = beta = None
 
-            gamma_cand = gamma0[None, :] + (K_obs_cand.T @ y_obs_oh)
+            gamma_cand = None
+            if self.channel_variant == "channel":
+                gamma_cand, _ = self.parzen_dirichlet_posterior(
+                    K=K_obs_cand,
+                    Y=y_obs_oh,
+                    gamma0=gamma0,
+                    use_ess=self.use_ess_label_dirichlet,
+                    tau=self.tau_label_dirichlet,
+                )
 
-            # Deterministic full-K path: reuse the shared closed-form IG implementation.
-            if (
-                self.n_theta_samples <= 0
-                and not self.sample_g
-                and (self.top_m is None or self.top_m >= K)
-            ):
-                theta_mean = (alpha / np.maximum(alpha + beta, 1e-12))[:, None]
-                U[:, j_a] = information_gain(
-                    r_cand,
-                    theta_mean,
-                    gamma_cand[:, None, :],
-                    normalize=True,
-                    check_input=False,
-                )[:, 0]
-                continue
+                # Deterministic full-K path: reuse the shared closed-form IG implementation.
+                if (
+                    self.n_theta_samples <= 0
+                    and not self.sample_label_dirichlet
+                    and (self.top_m is None or self.top_m >= K)
+                ):
+                    theta_mean = (alpha / np.maximum(alpha + beta, 1e-12))[:, None]
+                    U[:, j_a] = information_gain(
+                        r_cand,
+                        theta_mean,
+                        gamma_cand[:, None, :],
+                        normalize=True,
+                        check_input=False,
+                    )[:, 0]
+                    continue
+
+            if self.channel_variant == "diag_uniform_confusion":
+                alpha_diag = np.empty((len(sample_indices), K), dtype=float)
+                beta_diag = np.empty((len(sample_indices), K), dtype=float)
+                y_eq = y_obs_oh
+                for z in range(K):
+                    K_row = K_obs_cand * r_obs[:, [z]]
+                    a_z, b_z, _ = self.parzen_beta_posterior(
+                        K=K_row,
+                        p=y_eq[:, z],
+                        alpha0=alpha0,
+                        beta0=beta0,
+                        use_ess=self.use_ess_beta,
+                        tau=self.tau_beta,
+                    )
+                    alpha_diag[:, z] = a_z
+                    beta_diag[:, z] = b_z
+            else:
+                alpha_diag = beta_diag = None
+
+            if self.channel_variant == "full_confusion":
+                confusion_rows = np.empty(
+                    (len(sample_indices), K, K), dtype=float
+                )
+                for z in range(K):
+                    K_row = K_obs_cand * r_obs[:, [z]]
+                    row_post, _ = self.parzen_dirichlet_posterior(
+                        K=K_row,
+                        Y=y_obs_oh,
+                        gamma0=delta0_full[z],
+                        use_ess=self.use_ess_label_dirichlet,
+                        tau=self.tau_label_dirichlet,
+                    )
+                    confusion_rows[:, z, :] = row_post
+            else:
+                confusion_rows = None
 
             for j_x in range(len(sample_indices)):
                 if available_mask is not None and not available_mask[j_x, j_a]:
@@ -236,21 +375,42 @@ class IGKernelChannelPairScorer(PairScorer):
 
                 r = r_cand[j_x]
 
-                if self.top_m is None or self.top_m >= K:
-                    U[j_x, j_a] = self._ig_channel_full(
+                if self.channel_variant == "channel":
+                    if self.top_m is None or self.top_m >= K:
+                        U[j_x, j_a] = self._ig_channel_full(
+                            r=r,
+                            alpha=float(alpha[j_x]),
+                            beta=float(beta[j_x]),
+                            gamma=gamma_cand[j_x],
+                            rng=rng,
+                        )
+                    else:
+                        U[j_x, j_a] = self._ig_channel_topm(
+                            r=r,
+                            alpha=float(alpha[j_x]),
+                            beta=float(beta[j_x]),
+                            gamma=gamma_cand[j_x],
+                            top_m=int(self.top_m),
+                            rng=rng,
+                        )
+                elif self.channel_variant == "scalar_uniform_confusion":
+                    U[j_x, j_a] = self._ig_scalar_uniform_confusion(
                         r=r,
                         alpha=float(alpha[j_x]),
                         beta=float(beta[j_x]),
-                        gamma=gamma_cand[j_x],
                         rng=rng,
                     )
-                else:
-                    U[j_x, j_a] = self._ig_channel_topm(
+                elif self.channel_variant == "diag_uniform_confusion":
+                    U[j_x, j_a] = self._ig_diag_uniform_confusion(
                         r=r,
-                        alpha=float(alpha[j_x]),
-                        beta=float(beta[j_x]),
-                        gamma=gamma_cand[j_x],
-                        top_m=int(self.top_m),
+                        alpha=alpha_diag[j_x],
+                        beta=beta_diag[j_x],
+                        rng=rng,
+                    )
+                else:  # full_confusion
+                    U[j_x, j_a] = self._ig_full_confusion(
+                        r=r,
+                        delta=confusion_rows[j_x],
                         rng=rng,
                     )
 
@@ -283,7 +443,7 @@ class IGKernelChannelPairScorer(PairScorer):
                 float
             )
 
-        if self.sample_g:
+        if self.sample_label_dirichlet:
             gs = rng.dirichlet(gamma, size=thetas.size)
         else:
             g_mean = gamma / np.maximum(gamma.sum(), 1e-12)
@@ -342,7 +502,7 @@ class IGKernelChannelPairScorer(PairScorer):
                 float
             )
 
-        if self.sample_g:
+        if self.sample_label_dirichlet:
             g_fulls = rng.dirichlet(gamma, size=thetas.size)
         else:
             g_mean_full = gamma / np.maximum(gamma.sum(), 1e-12)
@@ -374,6 +534,134 @@ class IGKernelChannelPairScorer(PairScorer):
             igs.append(H_prior - H_post_exp)
 
         return float(np.mean(igs))
+
+    def _ig_scalar_uniform_confusion(
+        self,
+        *,
+        r: np.ndarray,
+        alpha: float,
+        beta: float,
+        rng: np.random.Generator,
+    ) -> float:
+        if self.n_theta_samples <= 0:
+            thetas = np.array([alpha / (alpha + beta)], dtype=float)
+        else:
+            thetas = rng.beta(alpha, beta, size=self.n_theta_samples).astype(
+                float
+            )
+
+        K = r.size
+        igs = []
+        for theta in thetas:
+            C = self._confusion_from_scalar_theta(K=K, theta=float(theta))
+            igs.append(self._ig_from_confusion(r=r, C=C))
+        return float(np.mean(igs))
+
+    def _ig_diag_uniform_confusion(
+        self,
+        *,
+        r: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        rng: np.random.Generator,
+    ) -> float:
+        alpha = np.asarray(alpha, dtype=float)
+        beta = np.asarray(beta, dtype=float)
+        if self.n_theta_samples <= 0:
+            thetas = (alpha / np.maximum(alpha + beta, 1e-12))[None, :]
+        else:
+            thetas = rng.beta(alpha, beta, size=(self.n_theta_samples, r.size))
+            thetas = np.asarray(thetas, dtype=float)
+
+        igs = []
+        for theta_vec in thetas:
+            C = self._confusion_from_diag_thetas(theta=np.asarray(theta_vec))
+            igs.append(self._ig_from_confusion(r=r, C=C))
+        return float(np.mean(igs))
+
+    def _ig_full_confusion(
+        self,
+        *,
+        r: np.ndarray,
+        delta: np.ndarray,
+        rng: np.random.Generator,
+    ) -> float:
+        delta = np.asarray(delta, dtype=float)
+        if delta.ndim != 2 or delta.shape[0] != delta.shape[1]:
+            raise ValueError(
+                f"delta must be square (K,K), got shape {delta.shape}"
+            )
+
+        if self.sample_label_dirichlet:
+            n_draws = max(1, self.n_theta_samples if self.n_theta_samples > 0 else 1)
+            Cs = np.empty((n_draws, delta.shape[0], delta.shape[1]), dtype=float)
+            for t in range(n_draws):
+                for z in range(delta.shape[0]):
+                    Cs[t, z, :] = rng.dirichlet(delta[z])
+        else:
+            C_mean = delta / np.maximum(delta.sum(axis=1, keepdims=True), 1e-12)
+            Cs = C_mean[None, :, :]
+
+        igs = [self._ig_from_confusion(r=r, C=C) for C in Cs]
+        return float(np.mean(igs))
+
+    @classmethod
+    def _confusion_from_scalar_theta(cls, *, K: int, theta: float) -> np.ndarray:
+        if K < 2:
+            raise ValueError("K must be >= 2")
+        theta = float(np.clip(theta, 0.0, 1.0))
+        off = (1.0 - theta) / (K - 1)
+        C = np.full((K, K), off, dtype=float)
+        np.fill_diagonal(C, theta)
+        return C
+
+    @classmethod
+    def _confusion_from_diag_thetas(cls, *, theta: np.ndarray) -> np.ndarray:
+        theta = np.asarray(theta, dtype=float)
+        K = theta.size
+        if K < 2:
+            raise ValueError("theta must have length >= 2")
+        theta = np.clip(theta, 0.0, 1.0)
+        off = (1.0 - theta) / (K - 1)
+        C = np.repeat(off[:, None], K, axis=1)
+        C[np.arange(K), np.arange(K)] = theta
+        return C
+
+    @classmethod
+    def _full_confusion_dirichlet_prior(
+        cls, *, K: int, accuracy_mean: float, row_strength: float
+    ) -> np.ndarray:
+        if K < 2:
+            raise ValueError("K must be >= 2")
+        if not (0.0 < accuracy_mean < 1.0):
+            raise ValueError("accuracy_mean must be in (0, 1)")
+        if row_strength <= 0:
+            raise ValueError("row_strength must be > 0")
+        off = (1.0 - accuracy_mean) / (K - 1)
+        prior_mean = np.full((K, K), off, dtype=float)
+        np.fill_diagonal(prior_mean, accuracy_mean)
+        return row_strength * prior_mean
+
+    @classmethod
+    def _ig_from_confusion(cls, *, r: np.ndarray, C: np.ndarray) -> float:
+        r = np.asarray(r, dtype=float)
+        C = np.asarray(C, dtype=float)
+        r = np.clip(r, 1e-15, 1.0)
+        r = r / np.maximum(r.sum(), 1e-15)
+        C = np.clip(C, 1e-15, 1.0)
+        C = C / np.maximum(C.sum(axis=1, keepdims=True), 1e-15)
+
+        py = r @ C
+        py = np.clip(py, 1e-15, 1.0)
+        py = py / py.sum()
+
+        H_prior = cls._entropy(r)
+        H_cond = 0.0
+        for y_idx in range(C.shape[1]):
+            post = r * C[:, y_idx]
+            post = post / np.maximum(post.sum(), 1e-15)
+            H_cond += py[y_idx] * cls._entropy(post)
+        return float(max(H_prior - H_cond, 0.0))
 
     @staticmethod
     def _entropy(p: np.ndarray) -> float:
@@ -458,3 +746,51 @@ class IGKernelChannelPairScorer(PairScorer):
 
         info = {"mu": mu, "mass": mass, "n_eff": n_eff}
         return alpha, beta, info
+
+    @staticmethod
+    def parzen_dirichlet_posterior(
+        K: np.ndarray,
+        Y: np.ndarray,
+        *,
+        gamma0: np.ndarray,
+        use_ess: bool = False,
+        tau: float = 1.0,
+        eps: float = 1e-12,
+    ):
+        K = np.asarray(K, dtype=float)
+        Y = np.asarray(Y, dtype=float)
+        gamma0 = np.asarray(gamma0, dtype=float)
+
+        if K.ndim != 2:
+            raise ValueError(f"K must be 2D, got shape {K.shape}")
+        if Y.ndim != 2:
+            raise ValueError(f"Y must be 2D, got shape {Y.shape}")
+        if K.shape[0] != Y.shape[0]:
+            raise ValueError(
+                f"Shape mismatch: K rows {K.shape[0]} vs Y rows {Y.shape[0]}"
+            )
+        if Y.shape[1] != gamma0.shape[0]:
+            raise ValueError(
+                f"Y classes {Y.shape[1]} must equal gamma0 length {gamma0.shape[0]}"
+            )
+        if np.any(gamma0 <= 0):
+            raise ValueError("gamma0 entries must be > 0")
+        if tau <= 0:
+            raise ValueError("tau must be > 0")
+
+        counts = K.T @ Y
+        mass = counts.sum(axis=1)
+        mu = counts / np.maximum(mass[:, None], eps)
+
+        if not use_ess:
+            gamma = gamma0[None, :] + counts
+            info = {"counts": counts, "mass": mass, "mu": mu}
+            return gamma, info
+
+        k_mass = K.sum(axis=0)
+        k_m2 = (K**2).sum(axis=0)
+        n_eff = (k_mass**2) / np.maximum(k_m2, eps)
+        conc = tau * n_eff
+        gamma = gamma0[None, :] + conc[:, None] * mu
+        info = {"mass": mass, "mu": mu, "n_eff": n_eff}
+        return gamma, info
