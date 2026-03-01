@@ -1,27 +1,30 @@
 defaults:
-  - al: dtd
+  - al: dermamnist7
   - classifier: annot_mix
-  - dataset: dtd
-  - embedder: dinov2
+  - paths: default
+  - dataset: dermamnist7
+  - embedder@classification_embedder: dinov2
+  - embedder@simulation_embedder: clip
   - pipeline: default
-  - simulation: dtd
+  - simulation: dermamnist7
   - module: mlp
   - training: default
-  - scheduler: step_ratio_1
+  - scheduler: step_ratio_2_1
   - sample@sample.init: typi_clust
   - sample@sample.actual: margin
   - scorer@scorer.init: random
-  - scorer@scorer.actual: ig_gain
+  - scorer@scorer.actual: beta
   - assigner@assigner.init: quota_sample
   - assigner@assigner.actual: greedy_sample
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
   - _self_
-experiment_name: "final-test"
-results_path: "mlflow" # TODO: Replace path for saving results via `mlflow`.
+experiment_name: "new"
+results_path: ${paths.results_path}
 device: "cuda"
 missing_label: -1
-seed: 1
+exit_after_simulation: True
+seed: 4
 hydra:
   run:
     dir: .

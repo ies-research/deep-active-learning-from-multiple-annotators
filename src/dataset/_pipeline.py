@@ -242,7 +242,9 @@ class HFNumpyFeaturePipeline:
             from datasets import Audio as HFAudio  # newer alias
         except Exception:
             try:
-                from datasets.features import Audio as HFAudio  # older location
+                from datasets.features import (
+                    Audio as HFAudio,
+                )  # older location
             except Exception:
                 return False
 
@@ -266,7 +268,9 @@ class HFNumpyFeaturePipeline:
         except Exception:
             from datasets.features import Audio as HFAudio
 
-        return ds.cast_column(self.spec.x_key, HFAudio(sampling_rate=int(target_sr)))
+        return ds.cast_column(
+            self.spec.x_key, HFAudio(sampling_rate=int(target_sr))
+        )
 
     def _prepare_x(self, batch_x):
         """
@@ -283,21 +287,31 @@ class HFNumpyFeaturePipeline:
             batch_x = batch_x.tolist()
 
         # text
-        if isinstance(batch_x, list) and (len(batch_x) == 0 or isinstance(batch_x[0], str)):
+        if isinstance(batch_x, list) and (
+            len(batch_x) == 0 or isinstance(batch_x[0], str)
+        ):
             return batch_x
 
         # HF AudioDecoder objects (datasets 4.x): list of decoders
-        if isinstance(batch_x, list) and len(batch_x) > 0 and hasattr(batch_x[0], "get_all_samples"):
+        if (
+            isinstance(batch_x, list)
+            and len(batch_x) > 0
+            and hasattr(batch_x[0], "get_all_samples")
+        ):
             out = []
             for dec in batch_x:
                 # Old syntax still works in v4.x (nice of them to not break *everything*)
                 try:
-                    arr = dec["array"]                # numpy (usually)
+                    arr = dec["array"]  # numpy (usually)
                     # sr  = dec["sampling_rate"]      # available if you want to assert
                 except Exception:
-                    samples = dec.get_all_samples()   # torchcodec AudioSamples
+                    samples = dec.get_all_samples()  # torchcodec AudioSamples
                     data = samples.data
-                    arr = data.detach().cpu().numpy() if hasattr(data, "detach") else np.asarray(data)
+                    arr = (
+                        data.detach().cpu().numpy()
+                        if hasattr(data, "detach")
+                        else np.asarray(data)
+                    )
 
                 arr = np.asarray(arr, dtype=np.float32)
 
@@ -309,14 +323,24 @@ class HFNumpyFeaturePipeline:
             return out
 
         # HF Audio decoded as dicts (older behavior / some setups)
-        if isinstance(batch_x, list) and len(batch_x) > 0 and isinstance(batch_x[0], dict) and "array" in batch_x[0]:
-            return [np.asarray(ex["array"], dtype=np.float32).reshape(-1) for ex in batch_x]
+        if (
+            isinstance(batch_x, list)
+            and len(batch_x) > 0
+            and isinstance(batch_x[0], dict)
+            and "array" in batch_x[0]
+        ):
+            return [
+                np.asarray(ex["array"], dtype=np.float32).reshape(-1)
+                for ex in batch_x
+            ]
 
         if isinstance(batch_x, dict) and "array" in batch_x:
             arrays = batch_x["array"]
             if isinstance(arrays, np.ndarray) and arrays.dtype == object:
                 arrays = arrays.tolist()
-            return [np.asarray(a, dtype=np.float32).reshape(-1) for a in arrays]
+            return [
+                np.asarray(a, dtype=np.float32).reshape(-1) for a in arrays
+            ]
 
         # Images and other modalities: pass through
         return batch_x

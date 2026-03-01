@@ -7,7 +7,7 @@ from sklearn.utils import check_random_state
 
 from skactiveml.utils import is_labeled
 from ._base import PairScorer
-from ._perf import information_gain
+from ._utils import information_gain
 
 
 def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -16,7 +16,7 @@ def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return X / np.maximum(n, eps)
 
 
-class IGKernelChannelPairScorer(PairScorer):
+class KernelSmoothedBayesianGain(PairScorer):
     """
     Pair scorer using information gain under a kernel-smoothed annotator model.
 

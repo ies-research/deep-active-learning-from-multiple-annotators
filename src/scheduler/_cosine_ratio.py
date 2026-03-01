@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 from ._base import BaseRatioScheduler
 
+
 class CosineAnnealingRatioScheduler(BaseRatioScheduler):
     """Cosine annealing ratio scheduler with optional warm restarts.
 
@@ -35,8 +36,8 @@ class CosineAnnealingRatioScheduler(BaseRatioScheduler):
         Only used if ``t_0`` is not ``None``.
     gamma : float, default=1.0
         Amplitude multiplier per restart. Must be in (0, 1] typically.
-        ``gamma < 1`` reduces the distance from ``start_value`` to ``end_value``
-        after each restart.
+        ``gamma < 1`` reduces the distance from ``start_value`` to 
+        ``end_value`` after each restart.
     t_end : int, optional
         End cycle (inclusive) for the non-restart case. If omitted, it defaults
         to ``n_cycles - 1`` when ``n_cycles`` is given, otherwise scheduling
@@ -80,16 +81,16 @@ class CosineAnnealingRatioScheduler(BaseRatioScheduler):
     """
 
     def __init__(
-            self,
-            start_value: float,
-            end_value: float,
-            *,
-            n_cycles: Optional[int] = None,
-            t_start: int = 0,
-            t_0: Optional[int] = None,
-            t_mult: float = 1.0,
-            gamma: float = 1.0,
-            t_end: Optional[int] = None,
+        self,
+        start_value: float,
+        end_value: float,
+        *,
+        n_cycles: Optional[int] = None,
+        t_start: int = 0,
+        t_0: Optional[int] = None,
+        t_mult: float = 1.0,
+        gamma: float = 1.0,
+        t_end: Optional[int] = None,
     ):
         super().__init__(n_cycles=n_cycles)
 
@@ -112,7 +113,9 @@ class CosineAnnealingRatioScheduler(BaseRatioScheduler):
 
         self.gamma = float(gamma)
         if self.t_0 is not None and not (0.0 < self.gamma <= 1.0):
-            raise ValueError(f"gamma must be in (0,1] for restarts, got {self.gamma}.")
+            raise ValueError(
+                f"gamma must be in (0,1] for restarts, got {self.gamma}."
+            )
 
         if t_end is None:
             if self.t_0 is None and self.n_cycles is not None:
@@ -122,7 +125,10 @@ class CosineAnnealingRatioScheduler(BaseRatioScheduler):
         else:
             self.t_end = t_end
             if self.t_end < self.t_start:
-                raise ValueError(f"t_end must be >= t_start, got {self.t_end} < {self.t_start}.")
+                raise ValueError(
+                    f"t_end must be >= t_start, "
+                    f"got {self.t_end} < {self.t_start}."
+                )
 
     @staticmethod
     def _cosine_interp(start: float, end: float, p: float) -> float:
@@ -134,12 +140,14 @@ class CosineAnnealingRatioScheduler(BaseRatioScheduler):
         if cycle < self.t_start:
             return self.start_value
 
-        # No restarts: one pass from t_start to t_end (or indefinitely if t_end None)
+        # No restarts: one pass from t_start to t_end (or indefinitely 
+        # if t_end None)
         if self.t_0 is None:
             if self.t_end is None:
-                # indefinite schedule: treat progress as min(cycle - t_start, 1) with denom 1
-                # (i.e., constant at end_value after first step). Better: user should pass t_end.
-                # We keep it explicit and unsurprising.
+                # indefinite schedule: treat progress as 
+                # min(cycle - t_start, 1) with denom 1
+                # (i.e., constant at end_value after first step). Better: 
+                # user should pass t_end. We keep it explicit and unsurprising.
                 if cycle == self.t_start:
                     return self.start_value
                 return self.end_value
@@ -166,7 +174,7 @@ class CosineAnnealingRatioScheduler(BaseRatioScheduler):
 
         # Decay amplitude with gamma^k
         amp0 = self.start_value - self.end_value
-        amp_k = amp0 * (self.gamma ** k)
+        amp_k = amp0 * (self.gamma**k)
         start_k = self.end_value + amp_k
 
         p = t_in / max(1e-12, period_len)  # avoid divide by zero

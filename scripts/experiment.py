@@ -1,4 +1,6 @@
 import sys
+import json
+from pathlib import Path
 
 import warnings
 import hydra
@@ -12,27 +14,51 @@ from hydra.utils import instantiate, get_class, to_absolute_path
 from skactiveml.utils import majority_vote, is_labeled, call_func, is_unlabeled
 from skactiveml.pool import SubSamplingWrapper
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 
 @hydra.main(
     config_path="../configs", config_name="experiment", version_base=None
 )
 def experiment(cfg):
     warnings.filterwarnings("ignore")
-    sys.path.append("../")
     from src.dataset import HFNumpyFeaturePipeline, ensure_z_train_cached
     from src.utils import (
         seed_everything,
         log_results_to_mlflow,
         compute_cycle_metrics,
         pretty_dataset_report,
-        pretty_cycle_metrics
+        pretty_cycle_metrics,
     )
 
     # Load dataset. -----------------------------------------------------------
     spec = instantiate(cfg.dataset)
-    embedder = instantiate(cfg.embedder)
+    cls_embedder_cfg = getattr(cfg, "classification_embedder", None)
+    sim_embedder_cfg = getattr(cfg, "simulation_embedder", None)
+
+    # Backward-compatible fallback for older configs that only define
+    # `embedder`.
+    if cls_embedder_cfg is None:
+        cls_embedder_cfg = cfg.embedder
+    if sim_embedder_cfg is None:
+        sim_embedder_cfg = cls_embedder_cfg
+
+    clf_embedder = instantiate(cls_embedder_cfg)
+    clf_embedder_fingerprint = getattr(
+        clf_embedder, "fingerprint", lambda: None
+    )()
+    sim_embedder = instantiate(sim_embedder_cfg)
+    sim_embedder_fingerprint = getattr(
+        sim_embedder, "fingerprint", lambda: None
+    )()
+    use_same_embedder = sim_embedder_fingerprint == clf_embedder_fingerprint
+
     pipe_cfg = instantiate(cfg.pipeline)
-    pipe = HFNumpyFeaturePipeline(spec=spec, embedder=embedder, cfg=pipe_cfg)
+    pipe = HFNumpyFeaturePipeline(
+        spec=spec, embedder=clf_embedder, cfg=pipe_cfg
+    )
     np_arrays = pipe.get_arrays()
     X_train = np_arrays["X_train"]
     y_train = np_arrays["y_train"]
@@ -47,25 +73,52 @@ def experiment(cfg):
     if z_train is None and getattr(cfg, "simulation", None) is not None:
         sim_cfg = instantiate(cfg.simulation)
 
-        # A stable dataset identifier for caching. Keep it tied to the dataset
-        # spec, not embedder.
+        # Bind cache to dataset + simulation embedder so classification and
+        # simulation can intentionally use different models without reusing
+        # stale z_train from another simulation backbone.
         dataset_id = (
             f"{spec.source}|train={list(spec.train_splits)}|y={spec.y_key}"
         )
-
-        z_train, info = ensure_z_train_cached(
-            dataset_id=dataset_id,
-            X_train_features=np_arrays["X_train"],  # only used on cache miss
-            y_train=np_arrays["y_train"],
-            cfg=sim_cfg,
-            embedder_fingerprint=getattr(
-                embedder, "fingerprint", lambda: None
-            )(),
+        dataset_id = (
+            f"{dataset_id}|sim_embedder="
+            f"{json.dumps(sim_embedder_fingerprint, sort_keys=True)}"
         )
-        z_train[:, :-1] = 0
+
+        sim_X_train = np_arrays["X_train"] if use_same_embedder else None
+
+        try:
+            z_train, _ = ensure_z_train_cached(
+                dataset_id=dataset_id,
+                X_train_features=sim_X_train,  # only used on cache miss
+                y_train=np_arrays["y_train"],
+                cfg=sim_cfg,
+                embedder_fingerprint=sim_embedder_fingerprint,
+            )
+        except ValueError as exc:
+            needs_sim_features = (
+                "cache miss and X_train_features is None" in str(exc)
+            )
+            if not needs_sim_features:
+                raise
+
+            sim_pipe = HFNumpyFeaturePipeline(
+                spec=spec, embedder=sim_embedder, cfg=pipe_cfg
+            )
+            sim_arrays = sim_pipe.get_arrays()
+            z_train, _ = ensure_z_train_cached(
+                dataset_id=dataset_id,
+                X_train_features=sim_arrays["X_train"],
+                y_train=np_arrays["y_train"],
+                cfg=sim_cfg,
+                embedder_fingerprint=sim_embedder_fingerprint,
+            )
         np_arrays["z_train"] = z_train
 
-    # Print dataset summary. ---------------------------------------------------
+    if cfg.exit_after_simulation:
+        print("Exiting after simulation as per config.")
+        return
+
+    # Print dataset summary. --------------------------------------------------
     pretty_dataset_report(
         classes=classes,
         n_features=n_features,
@@ -172,7 +225,9 @@ def experiment(cfg):
             if cycle_idx == 0
             else cfg.al.actual_pair_budget
         )
-        current_sample_budget = int(-(-current_pair_budget // assignment_per_sample_ratio))
+        current_sample_budget = int(
+            -(-current_pair_budget // assignment_per_sample_ratio)
+        )
 
         # Update availability of annotators.
         available_mask = np.logical_and(
@@ -225,14 +280,16 @@ def experiment(cfg):
         y_pool[(pair_indices[:, 0], pair_indices[:, 1])] = z_train[
             (pair_indices[:, 0], pair_indices[:, 1])
         ]
-        #y_pool[sample_indices, 0] = y_train[sample_indices]
+        # y_pool[sample_indices, 0] = y_train[sample_indices]
 
         # Retrain classifier and infer predictions for test samples. ----------
         clf.fit(X_pool, y_pool)
         p_pred_test = clf.predict_proba(X_test)
 
         # Log results of current cycle.
-        steps.append((steps[-1] if len(steps) > 0 else 0) + current_pair_budget)
+        steps.append(
+            (steps[-1] if len(steps) > 0 else 0) + current_pair_budget
+        )
         entry = compute_cycle_metrics(
             y_acquired=y_pool,
             y_true=y_train,
@@ -248,7 +305,7 @@ def experiment(cfg):
         # Print active learning cycle summary. --------------------------------
         pretty_cycle_metrics(m=entry, cycle=cycle_idx)
 
-# Log results via mlflow. -------------------------------------------------
+    # Log results via mlflow. -------------------------------------------------
     log_results_to_mlflow(
         cfg=cfg,
         cycle_metrics=cycle_log,

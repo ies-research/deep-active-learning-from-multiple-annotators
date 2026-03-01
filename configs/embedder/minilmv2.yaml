@@ -1,5 +1,5 @@
 _target_: src.embedder.TorchHFTextEmbedder
-model_id: sentence-transformers/all-mpnet-base-v2
+model_id: sentence-transformers/all-MiniLM-L6-v2
 cache_dir: ${paths.embedder_cache_dir}
 pooling: mean
 dtype: float32

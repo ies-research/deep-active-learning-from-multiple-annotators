@@ -1,0 +1,8 @@
+master_dir: /home/datasets
+
+dataset_cache_dir: ${paths.master_dir}
+embedder_cache_dir: ${paths.master_dir}/.hf_embedders
+pipeline_cache_dir: ${paths.master_dir}/.hf_embed_cache
+crowd_cache_dir: ${paths.master_dir}/.hf_crowd_cache
+
+results_path: mlflow

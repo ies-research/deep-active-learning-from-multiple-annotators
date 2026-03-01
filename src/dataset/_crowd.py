@@ -22,9 +22,11 @@ class AnnotatorTypeConfig:
     proportion:
         Relative weight of this type in the annotator population.
         The weights are normalized internally and do not need to sum to 1.0.
-    p_mean, p_std:
-        For non-spammers: annotator accuracy ``p_a`` is sampled as
-        ``p_a ~ Normal(p_mean, p_std)`` and clipped to (0, 1).
+    q_mean, q_std:
+        For non-spammers: corrected skill ``q_a`` is sampled from a Beta
+        distribution parameterized by mean/std on [0,1].
+        Raw accuracy is mapped by class count ``K`` as:
+        ``p_a = 1/K + (1 - 1/K) * q_a``.
         ``p_a`` defines the diagonal mass of the base confusion mean.
     s_mean, s_std:
         For non-spammers: global (per-annotator) confusion rows are sampled as
@@ -49,8 +51,8 @@ class AnnotatorTypeConfig:
     name: str
     proportion: float
 
-    p_mean: float = 0.0
-    p_std: float = 0.0
+    q_mean: float = 0.0
+    q_std: float = 0.0
 
     s_mean: float = 150.0
     s_std: float = 0.35
@@ -258,6 +260,38 @@ def _lognormal(rng: np.random.Generator, mean: float, sigma: float) -> float:
     return float(rng.lognormal(mean=np.log(mean), sigma=sigma))
 
 
+def _sample_beta_from_mean_std(
+    rng: np.random.Generator, mean: float, std: float, eps: float = 1e-6
+) -> float:
+    """
+    Sample x in (0,1) from a Beta distribution with target mean/std.
+
+    If std <= 0, return deterministic mean (clipped to (eps, 1-eps)).
+    """
+    m = float(np.clip(mean, eps, 1.0 - eps))
+    s = max(float(std), 0.0)
+    if s <= 0.0:
+        return m
+
+    v = s * s
+    max_v = m * (1.0 - m)
+    if v >= max_v:
+        raise ValueError(
+            "Invalid q_std for Beta sampling: need q_std^2 < q_mean*(1-q_mean), "
+            f"got q_mean={mean}, q_std={std}."
+        )
+
+    conc = (m * (1.0 - m) / v) - 1.0
+    alpha = m * conc
+    beta = (1.0 - m) * conc
+    if alpha <= 0.0 or beta <= 0.0:
+        raise ValueError(
+            "Invalid Beta parameters derived from q_mean/q_std: "
+            f"alpha={alpha}, beta={beta}."
+        )
+    return float(rng.beta(alpha, beta))
+
+
 def build_annotator_params(
     types: Sequence[AnnotatorTypeConfig],
     type_ids: np.ndarray,
@@ -283,6 +317,7 @@ def build_annotator_params(
     -------
     params:
         Dictionary containing:
+        - q: (A,) float32, corrected skill for normal annotators
         - p: (A,) float32, accuracy for normal annotators
         - s: (A,) float32, base Dirichlet concentration
         - kappa: (A,) float32, cluster Dirichlet concentration
@@ -292,7 +327,9 @@ def build_annotator_params(
     """
     rng = np.random.default_rng(seed)
     A = int(type_ids.shape[0])
+    chance = 1.0 / float(n_classes)
 
+    q = np.empty(A, dtype=np.float32)
     p = np.empty(A, dtype=np.float32)
     s = np.empty(A, dtype=np.float32)
     kappa = np.empty(A, dtype=np.float32)
@@ -304,6 +341,7 @@ def build_annotator_params(
 
         if t.spammer_mode == "uniform":
             spammer_mode[a] = "uniform"
+            q[a] = float(0.0)  # informational only
             p[a] = float(1.0 / n_classes)  # informational only
         elif t.spammer_mode == "single_class":
             spammer_mode[a] = "single_class"
@@ -312,15 +350,19 @@ def build_annotator_params(
                 if t.single_class is not None
                 else rng.integers(0, n_classes)
             )
+            q[a] = np.nan
             p[a] = np.nan
         else:
-            p[a] = _clip01(rng.normal(t.p_mean, t.p_std))
+            qa = _sample_beta_from_mean_std(rng, t.q_mean, t.q_std)
+            q[a] = qa
+            p[a] = _clip01(chance + (1.0 - chance) * qa)
 
         s[a] = _lognormal(rng, t.s_mean, t.s_std)
         kappa[a] = _lognormal(rng, t.kappa_mean, t.kappa_std)
 
     return {
         "type_ids": type_ids.astype(np.int64, copy=False),
+        "q": q,
         "p": p,
         "s": s,
         "kappa": kappa,
@@ -607,6 +649,7 @@ def simulate_crowd_from_features(
         "n_clusters": G,
         "cluster_id": cluster_id,
         "type_ids": params["type_ids"],
+        "q": params["q"],
         "p": params["p"],
         "s": params["s"],
         "kappa": params["kappa"],

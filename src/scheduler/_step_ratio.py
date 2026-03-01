@@ -21,15 +21,17 @@ class StepRatioScheduler(BaseRatioScheduler):
         Default ratio used if no segment matches the cycle.
     schedule : sequence of dict, optional
         Sequence of segments. Each segment is a mapping with keys:
-        ``start`` (int, inclusive), ``end`` (int, inclusive), and ``value`` (float).
-        Missing ``start`` defaults to 0. Missing ``end`` defaults to
-        ``n_cycles - 1`` if ``n_cycles`` is provided, otherwise to a large number.
+        ``start`` (int, inclusive), ``end`` (int, inclusive), and ``value`` 
+        (float). Missing ``start`` defaults to 0. Missing ``end`` defaults to
+        ``n_cycles - 1`` if ``n_cycles`` is provided, otherwise to a large
+        number.
     n_cycles : int, optional
         Total number of cycles used for validation and default end handling.
 
     Notes
     -----
-    - Segments are matched in the given order; on overlap, the first match wins.
+    - Segments are matched in the given order; on overlap, 
+      the first match wins.
     - Values may be fractional.
 
     Examples
@@ -44,11 +46,11 @@ class StepRatioScheduler(BaseRatioScheduler):
     """
 
     def __init__(
-            self,
-            *,
-            default: float = 1.0,
-            schedule: Optional[Sequence[Dict[str, Any]]] = None,
-            n_cycles: Optional[int] = None,
+        self,
+        *,
+        default: float = 1.0,
+        schedule: Optional[Sequence[Dict[str, Any]]] = None,
+        n_cycles: Optional[int] = None,
     ):
         super().__init__(n_cycles=n_cycles)
         self.default = default
@@ -59,17 +61,29 @@ class StepRatioScheduler(BaseRatioScheduler):
         if schedule is not None:
             for seg in schedule:
                 if not isinstance(seg, dict):
-                    raise TypeError(f"Each schedule segment must be a dict, got {type(seg)}.")
+                    raise TypeError(
+                        "Each schedule segment must be a dict, "
+                        f"got {type(seg)}."
+                    )
                 start = seg.get("start", 0)
-                end_default = (self.n_cycles - 1) if self.n_cycles is not None else 10**9
+                end_default = (
+                    (self.n_cycles - 1) if self.n_cycles is not None else 10**9
+                )
                 end = seg.get("end", end_default)
                 value = seg["value"]
                 if start < 0:
-                    raise ValueError(f"segment start must be >= 0, got {start}.")
+                    raise ValueError(
+                        f"segment start must be >= 0, got {start}."
+                    )
                 if end < start:
-                    raise ValueError(f"segment end must be >= start, got end={end}, start={start}.")
+                    raise ValueError(
+                        f"segment end must be >= start, got end={end}, "
+                        f"start={start}."
+                    )
                 if value <= 0:
-                    raise ValueError(f"segment value must be > 0, got {value}.")
+                    raise ValueError(
+                        f"segment value must be > 0, got {value}."
+                    )
                 segs.append(_StepSegment(start=start, end=end, value=value))
         self._segments = tuple(segs)
 

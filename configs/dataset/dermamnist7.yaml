@@ -1,7 +1,7 @@
 _target_: src.dataset.HFDatasetSpec
 source: danjacobellis/dermamnist_224
 source_kind: hub_or_local_script
-cache_dir: /home/datasets
+cache_dir: ${paths.dataset_cache_dir}
 train_splits: [train]
 test_split: test
 x_key: image

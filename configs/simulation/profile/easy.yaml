@@ -1,0 +1,35 @@
+types:
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: expert
+    proportion: 0.15
+    q_mean: 0.88
+    q_std: 0.03
+    s_mean: 140
+    s_std: 0.18
+    kappa_mean: 140
+    kappa_std: 0.18
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: competent
+    proportion: 0.55
+    q_mean: 0.75
+    q_std: 0.05
+    s_mean: 80
+    s_std: 0.25
+    kappa_mean: 80
+    kappa_std: 0.25
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: novice
+    proportion: 0.20
+    q_mean: 0.60
+    q_std: 0.08
+    s_mean: 40
+    s_std: 0.30
+    kappa_mean: 40
+    kappa_std: 0.30
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: spammer_uniform
+    proportion: 0.10
+    spammer_mode: uniform

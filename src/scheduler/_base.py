@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Optional
 
 import numpy as np
 
@@ -61,12 +61,12 @@ class BaseRatioScheduler(ABC):
         """
         cycle = cycle
         if self.n_cycles is not None and not (0 <= cycle < self.n_cycles):
-            raise ValueError(f"cycle={cycle} out of range for n_cycles={self.n_cycles}.")
+            raise ValueError(
+                f"cycle={cycle} out of range for n_cycles={self.n_cycles}."
+            )
         return float(self._value(cycle))
 
     @abstractmethod
     def _value(self, cycle: int) -> float:
         """Subclass hook to compute the ratio for ``cycle``."""
         raise NotImplementedError
-
-

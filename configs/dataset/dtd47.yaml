@@ -1,10 +1,10 @@
 _target_: src.dataset.HFDatasetSpec
-source: uoft-cs/cifar100
+source: tanganke/dtd
 source_kind: hub_or_local_script
-cache_dir: /home/datasets
+cache_dir: ${paths.dataset_cache_dir}
 train_splits: [train]
 test_split: test
-x_key: img
-y_key: fine_label
+x_key: image
+y_key: label
 z_key: null
 trust_remote_code: false

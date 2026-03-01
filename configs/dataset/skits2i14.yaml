@@ -1,7 +1,7 @@
 _target_: src.dataset.HFDatasetSpec
 source: skit-ai/skit-s2i
 source_kind: hub_or_local_script
-cache_dir: /home/datasets
+cache_dir: ${paths.dataset_cache_dir}
 train_splits: [train]
 test_split: test
 x_key: audio

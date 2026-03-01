@@ -1,6 +1,6 @@
 _target_: src.embedder.TorchHFImageEmbedder
 model_id: openai/clip-vit-base-patch32
-cache_dir: /home/datasets/.hf_embedders
+cache_dir: ${paths.embedder_cache_dir}
 pooling: pooler
 dtype: float32
 device: null

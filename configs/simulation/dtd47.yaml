@@ -1,17 +1,17 @@
 defaults:
-  - profile@_here_: easy
+  - profile@_here_: dev_dtd_47
   - _self_
 
 _target_: src.dataset.CrowdSimConfig
 
-seed: 0
-n_annotators: 10
+seed: 3
+n_annotators: 40
 allocation: deterministic
 missing_rate: 0.0
 missing_value: -1
 
 use_clusters: true
-n_clusters: 20
+n_clusters: 141
 kmeans_seed: 0
 k_means_max_iter: 100
 k_means_batch_size: 1024

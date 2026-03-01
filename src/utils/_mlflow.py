@@ -171,6 +171,8 @@ def log_hydra_config_to_mlflow(
         "dataset",
         "classifier",
         "embedder",
+        "classification_embedder",
+        "simulation_embedder",
         "module",
         "pipeline",
         "sample",

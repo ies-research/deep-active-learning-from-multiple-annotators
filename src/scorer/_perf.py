@@ -46,8 +46,13 @@ class PerformancePairScorer(PairScorer):
             Random utilities.
         """
         X_cand = X[sample_indices]
-        _, U = clf.predict_proba(X_cand, extra_outputs=["annotator_perf"])
+        P, P_perf, P_annot = clf.predict_proba(
+            X_cand, extra_outputs=["annotator_perf", "annotator_class"]
+        )
+        U = P_perf  # information_gain(P, P_perf, P_annot)
         if available_mask is not None:
             U = np.where(available_mask, U, np.nan)
 
         return U
+
+

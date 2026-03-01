@@ -1,6 +1,6 @@
 _target_: src.embedder.TorchHFImageEmbedder
 model_id: facebook/dinov2-small
-cache_dir: /home/datasets/.hf_embedders
+cache_dir: ${paths.embedder_cache_dir}
 pooling: cls
 dtype: float32
 device: null

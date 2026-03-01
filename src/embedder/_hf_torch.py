@@ -55,7 +55,9 @@ class TorchHFImageEmbedder(Embedder):
             "bfloat16": torch.bfloat16,
         }
         if self.dtype not in dtype_map:
-            raise ValueError(f"Unknown dtype={self.dtype!r}. Expected one of {list(dtype_map)}.")
+            raise ValueError(
+                f"Unknown dtype={self.dtype!r}. Expected one of {list(dtype_map)}."
+            )
 
         self._torch = torch
         self._torch_dtype = dtype_map[self.dtype]
@@ -133,7 +135,9 @@ class TorchHFImageEmbedder(Embedder):
         # If model has a dedicated vision submodule, use it to get tokens/pooler.
         # (CLIPModel has vision_model)
         if hasattr(m, "vision_model"):
-            vision_out = m.vision_model(pixel_values=pixel_values, return_dict=True)
+            vision_out = m.vision_model(
+                pixel_values=pixel_values, return_dict=True
+            )
             h = getattr(vision_out, "last_hidden_state", None)
             pooler = getattr(vision_out, "pooler_output", None)
             return {"h": h, "pooler": pooler, "image_embeds": None}
@@ -195,7 +199,9 @@ class TorchHFImageEmbedder(Embedder):
                     )
 
                 if self.pooling == "none":
-                    if (not self.include_cls_token) and getattr(h, "ndim", None) == 3:
+                    if (not self.include_cls_token) and getattr(
+                        h, "ndim", None
+                    ) == 3:
                         emb = h[:, 1:, :]
                     else:
                         emb = h
@@ -224,7 +230,9 @@ class TorchHFImageEmbedder(Embedder):
                             "Use 'mean', 'none', or 'pooler' (if available)."
                         )
                 else:
-                    raise ValueError(f"Unsupported last_hidden_state ndim={h.ndim}.")
+                    raise ValueError(
+                        f"Unsupported last_hidden_state ndim={h.ndim}."
+                    )
 
             return (
                 emb.detach()
@@ -630,12 +638,29 @@ class TorchHFAudioEmbedder:
                         input_lengths = attn.long().sum(dim=-1)  # (B,)
 
                         # Try to find the helper on the model (different wrappers expose it differently)
-                        get_len = getattr(self._model, "_get_feat_extract_output_lengths", None)
+                        get_len = getattr(
+                            self._model,
+                            "_get_feat_extract_output_lengths",
+                            None,
+                        )
                         if get_len is None:
                             # Some wrappers keep the base model under an attribute (rare with AutoModel, but cheap to try)
-                            for attr in ("wav2vec2", "hubert", "wavlm", "model"):
+                            for attr in (
+                                "wav2vec2",
+                                "hubert",
+                                "wavlm",
+                                "model",
+                            ):
                                 base = getattr(self._model, attr, None)
-                                get_len = getattr(base, "_get_feat_extract_output_lengths", None) if base is not None else None
+                                get_len = (
+                                    getattr(
+                                        base,
+                                        "_get_feat_extract_output_lengths",
+                                        None,
+                                    )
+                                    if base is not None
+                                    else None
+                                )
                                 if get_len is not None:
                                     break
 
@@ -646,16 +671,22 @@ class TorchHFAudioEmbedder:
                                 "Cannot do mask-aware pooling safely."
                             )
 
-                        feat_lengths = get_len(input_lengths).to(device=h.device)  # (B,)
+                        feat_lengths = get_len(input_lengths).to(
+                            device=h.device
+                        )  # (B,)
 
                         # Build frame mask (B, T_feat)
-                        t = torch.arange(T_feat, device=h.device)[None, :]          # (1, T_feat)
-                        frame_mask = (t < feat_lengths[:, None]).to(dtype=h.dtype)  # (B, T_feat)
+                        t = torch.arange(T_feat, device=h.device)[
+                            None, :
+                        ]  # (1, T_feat)
+                        frame_mask = (t < feat_lengths[:, None]).to(
+                            dtype=h.dtype
+                        )  # (B, T_feat)
 
                     # Mask-aware mean over frames
-                    mask = frame_mask.unsqueeze(-1)                 # (B, T_feat, 1)
-                    summed = (h * mask).sum(dim=1)                  # (B, D)
-                    denom = mask.sum(dim=1).clamp(min=1.0)          # (B, 1)
+                    mask = frame_mask.unsqueeze(-1)  # (B, T_feat, 1)
+                    summed = (h * mask).sum(dim=1)  # (B, D)
+                    denom = mask.sum(dim=1).clamp(min=1.0)  # (B, 1)
                     emb = summed / denom
             else:
                 raise RuntimeError("Unreachable pooling branch.")

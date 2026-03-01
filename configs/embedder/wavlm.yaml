@@ -1,5 +1,5 @@
 _target_: src.embedder.TorchHFAudioEmbedder
-model_id: facebook/wav2vec2-large-960h
+model_id: microsoft/wavlm-base-plus
 cache_dir: ${paths.embedder_cache_dir}
 pooling: mean
 dtype: float32
