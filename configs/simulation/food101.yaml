@@ -1,10 +1,10 @@
 defaults:
-  - profile@_here_: hard
+  - profile@_here_: medium
   - _self_
 
 _target_: src.dataset.CrowdSimConfig
 
-seed: 0
+seed: 4
 n_annotators: 50
 allocation: deterministic
 missing_rate: 0.0

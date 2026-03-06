@@ -269,11 +269,14 @@ def experiment(cfg):
         )
 
         # Assign annotators to samples given utilities. -----------------------
+        remaining_budget = cfg.al.n_cycles * cfg.al.actual_pair_budget - cycle_idx * cfg.al.actual_pair_budget
         pair_indices = call_func(
             f_callable=current_assigner,
             utilities=utilities,
             sample_indices=sample_indices,
             budget=current_pair_budget,
+            remaining_budget=remaining_budget,
+            ignore_var_keyword=True,
         )
 
         # Query labels according to assignment. -------------------------------

@@ -1,5 +1,5 @@
 defaults:
-  - profile@_here_: medium
+  - profile@_here_: easy
   - _self_
 
 _target_: src.dataset.CrowdSimConfig

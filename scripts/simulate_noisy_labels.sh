@@ -30,7 +30,7 @@ run_prep audiomnist10 wav2vec wavlm
 run_prep skits2i14 wav2vec wavlm
 
 # Text datasets: classify with MPNet-v2, simulate with MiniLM-v2.
-run_prep banking77 mpnetv2 minilmv2
-run_prep trec6 mpnetv2 minilmv2
+run_prep banking77 minilmv2 mpnetv2
+run_prep trec6 minilmv2 mpnetv2
 
 echo "All embedding caches and annotator simulations are prepared."

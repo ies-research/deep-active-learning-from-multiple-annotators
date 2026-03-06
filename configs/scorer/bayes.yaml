@@ -1,0 +1,12 @@
+_target_: src.scorer.BayesPairScorer
+prior_agreement: 0.5
+min_labeled_per_annotator: 5
+agreement_mode: "confidence_weighted"
+clip_target: 1.0e-4
+lr: 1.0e-2
+max_epochs: 100
+batch_size: 256
+prior_precision: 1.0
+mc_samples: 30
+exploration_weight: 1.0
+l2_normalize_embeddings: true

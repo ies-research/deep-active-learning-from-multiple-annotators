@@ -1,10 +1,12 @@
-_target_: src.scorer.IGKernelChannelPairScorer
+_target_: src.scorer.KernelSmoothedBayesianGain
 accuracy_mean: 0.9
-accuracy_strength: 10.0
+accuracy_mean_mode: "per_annotator_observed"
+accuracy_strength: 1.0
 gamma_x: "median"
+gamma_x_scope: "global"
 gamma_a: "median"
 use_annotator_embeddings: false
-channel_label_dirichlet_strength: 1.0
+channel_label_dirichlet_strength: 1
 channel_variant: "channel"
 use_ess_beta: true
 tau_beta: 1.0
@@ -13,3 +15,4 @@ tau_label_dirichlet: 1.0
 top_m: null
 n_theta_samples: 1
 sample_label_dirichlet: true
+channel_wrong_label_mode: "sample_dirichlet_wrong"
