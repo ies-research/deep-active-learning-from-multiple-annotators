@@ -1,10 +1,8 @@
 try:
     import numpy as np
-    import torch
 
     from sklearn.utils.validation import check_array
     from torch import nn
-    from torch.nn import CrossEntropyLoss
     from torch.nn import functional as F
 
     from skactiveml.base import SkactivemlClassifier
@@ -17,8 +15,8 @@ try:
     from skactiveml.classifier.multiannotator._utils import (
         _SkorchMultiAnnotatorClassifier,
         _MultiAnnotatorClassificationModule,
-        _MultiAnnotatorCollate,
     )
+
 
     class AggregateClassifier(_SkorchMultiAnnotatorClassifier):
         """Aggregate Classifier
@@ -37,6 +35,18 @@ try:
             `forward` module must return logits as first element and optional
             sample embeddings as second element. If no sample embeddings are
             returned, the implementation uses the original samples.
+        aggregate_function : {"majority_voting", "soft_voting", "dawid_skene_voting"}, \
+                default="majority_voting"
+            Aggregation strategy used during fit:
+            - "majority_voting": majority vote converted to one-hot labels.
+            - "soft_voting": normalized vote vectors.
+            - "dawid_skene_voting": Dawid-Skene posterior label estimates.
+        dawid_skene_max_iter : int, default=100
+            Maximum number of EM iterations for Dawid-Skene.
+        dawid_skene_tol : float, default=1e-6
+            Convergence tolerance for Dawid-Skene.
+        dawid_skene_smoothing : float, default=1e-1
+            Additive smoothing for Dawid-Skene confusion-matrix estimation.
         n_annotators : int, default=None
             Number of annotators. If `n_annotators=None`, the number of
             annotators is inferred from `y` when calling `fit`.
@@ -67,12 +77,21 @@ try:
             "embeddings",
             "annotator_perf",
             "annotator_class",
+            "annotator_confusion_matrices",
+        }
+        _DS_EXTRA_OUTPUTS = {
+            "annotator_perf",
+            "annotator_class",
+            "annotator_confusion_matrices",
         }
 
         def __init__(
             self,
             clf_module,
-            aggregate_function="mv",
+            aggregate_function="majority_voting",
+            dawid_skene_max_iter=100,
+            dawid_skene_tol=1e-6,
+            dawid_skene_smoothing=1e-2,
             n_annotators=None,
             neural_net_param_dict=None,
             sample_dtype=np.float32,
@@ -85,7 +104,7 @@ try:
                 multi_annotator_module=_AggregateModule,
                 clf_module=clf_module,
                 n_annotators=n_annotators,
-                criterion=CrossEntropyLoss,
+                criterion=nn.CrossEntropyLoss,
                 sample_dtype=sample_dtype,
                 classes=classes,
                 missing_label=missing_label,
@@ -94,6 +113,9 @@ try:
                 neural_net_param_dict=neural_net_param_dict,
             )
             self.aggregate_function = aggregate_function
+            self.dawid_skene_max_iter = dawid_skene_max_iter
+            self.dawid_skene_tol = dawid_skene_tol
+            self.dawid_skene_smoothing = dawid_skene_smoothing
 
         def _fit(self, fit_function, X, y, **fit_params):
             """
@@ -135,19 +157,58 @@ try:
 
             X_train, y_train = self._return_training_data(X=X, y=y)
             if X_train is not None and y_train is not None:
-                if self.aggregate_function == "mv":
-                    y_train_agg = majority_vote(
-                        y=y_train,
-                        missing_label=self.missing_label,
-                        random_state=self.random_state,
-                        classes=self.classes_,
-                    )
-                else:
-                    raise ValueError()
+                y_train_agg = self._aggregate_targets(y=y_train)
                 self.neural_net_.partial_fit(
                     X_train, y_train_agg, **fit_params
                 )
             return self
+
+
+        def _aggregate_targets(self, y):
+            if self.aggregate_function == "majority_voting":
+                y_mv = majority_vote(
+                    y=y,
+                    missing_label=-1,
+                    random_state=self.random_state,
+                    classes=np.arange(len(self.classes_)),
+                )
+                return y_mv
+
+            if self.aggregate_function == "soft_voting":
+                votes = compute_vote_vectors(
+                    y=y,
+                    classes=np.arange(len(self.classes_)),
+                    missing_label=-1,
+                )
+                return _normalize_rows(votes).astype(np.float32, copy=False)
+
+            if self.aggregate_function == "dawid_skene_voting":
+                posteriors, confusions, class_prior, info = (
+                    dawid_skene(y=y, n_classes=len(self.classes_), max_iter=self.dawid_skene_max_iter, tol=self.dawid_skene_tol, smoothing=self.dawid_skene_smoothing)
+                )
+                self.dawid_skene_posteriors_ = posteriors
+                self.annotator_confusion_matrices_ = confusions
+                self.dawid_skene_class_prior_ = class_prior
+                self.dawid_skene_n_iter_ = info["n_iter"]
+                self.dawid_skene_converged_ = info["converged"]
+                return posteriors.astype(np.float32, copy=False)
+
+            raise ValueError("Unexpected aggregate function.")
+
+
+        def _validate_ds_extra_outputs(self, extra_outputs):
+            ds_requested = [
+                name for name in extra_outputs if name in self._DS_EXTRA_OUTPUTS
+            ]
+            if not ds_requested:
+                return
+            if self.aggregate_function != "dawid_skene_voting":
+                raise ValueError(
+                    "Requested Dawid-Skene outputs "
+                    f"{ds_requested}, but aggregate_function="
+                    f"{self.aggregate_function!r} is not "
+                    "'dawid_skene_voting'."
+                )
 
         def predict(
             self,
@@ -175,11 +236,16 @@ try:
                 - "embeddings" : Additionally return the learned embeddings
                   `X_embed` for the samples in `X`.
                 - "annotator_perf" : additionally return the estimated
-                  annotator performance probabilities `P_perf` for each
-                  sample–annotator pair.
+                  annotator performance probabilities `P_perf` for each sample-
+                  annotator pair (available only for `aggregate_function=
+                  'dawid_skene'`).
                 - "annotator_class" : Additionally return the annotator–class
                   probability estimates `P_annot` for each sample, class, and
-                  annotator.
+                  annotator (available only for `aggregate_function=
+                  'dawid_skene'`).
+                - "annotator_confusion_matrices" : Additionally return the
+                  Dawid-Skene annotator confusion matrices `C` of shape
+                  `(n_annotators, n_classes, n_classes)`.
 
             Returns
             -------
@@ -239,11 +305,16 @@ try:
                 - "embeddings" : Additionally return the learned embeddings
                   `X_embed` for the samples in `X`.
                 - "annotator_perf" : additionally return the estimated
-                  annotator performance probabilities `P_perf` for each
-                  sample–annotator pair.
+                  annotator performance probabilities `P_perf` for each sample-
+                  annotator pair (available only for `aggregate_function=
+                  'dawid_skene'`).
                 - "annotator_class" : Additionally return the annotator–class
                   probability estimates `P_annot` for each sample, class, and
-                  annotator.
+                  annotator (available only for `aggregate_function=
+                  'dawid_skene'`).
+                - "annotator_confusion_matrices" : Additionally return the
+                  Dawid-Skene annotator confusion matrices `C` of shape
+                  `(n_annotators, n_classes, n_classes)`.
 
             Returns
             -------
@@ -282,6 +353,7 @@ try:
                 extra_outputs=extra_outputs,
                 allowed_names=AggregateClassifier._ALLOWED_EXTRA_OUTPUTS,
             )
+            self._validate_ds_extra_outputs(extra_outputs=extra_outputs)
 
             # Initialize module, if not done yet.
             if not hasattr(self, "neural_net_"):
@@ -293,27 +365,18 @@ try:
             old_forward_return = net.forward_return
             forward_outputs = {"probas": (0, nn.Softmax(dim=-1))}
             forward_returns = ["logits_class"]
+            model_extra_outputs = []
             out_idx = 1
 
             if "logits" in extra_outputs:
                 forward_outputs["logits"] = (0, None)
+                model_extra_outputs.append("logits")
 
             if "embeddings" in extra_outputs:
                 forward_outputs["embeddings"] = (out_idx, None)
                 forward_returns.append("x_embed")
+                model_extra_outputs.append("embeddings")
                 out_idx += 1
-
-            if "annotator_perf" in extra_outputs:
-                forward_outputs["annotator_perf"] = (out_idx, None)
-                forward_returns.append("p_annot_perf")
-                out_idx += 1
-
-            if "annotator_class" in extra_outputs:
-                forward_outputs["annotator_class"] = (
-                    out_idx,
-                    nn.Softmax(dim=-1),
-                )
-                forward_returns.append("logits_annot")
 
             # Compute predictions for the different outputs required
             # by the input parameters.
@@ -322,39 +385,83 @@ try:
                 fw_out = self._forward_with_named_outputs(
                     X=X,
                     forward_outputs=forward_outputs,
-                    extra_outputs=extra_outputs,
+                    extra_outputs=model_extra_outputs,
                 )
             finally:
                 net.set_forward_return(old_forward_return)
 
+            if isinstance(fw_out, tuple):
+                p_class = fw_out[0]
+                model_named = {
+                    name: value
+                    for name, value in zip(model_extra_outputs, fw_out[1:])
+                }
+            else:
+                p_class = fw_out
+                model_named = {}
+
+            ds_requested = [
+                name
+                for name in (
+                    "annotator_perf",
+                    "annotator_class",
+                    "annotator_confusion_matrices",
+                )
+                if name in extra_outputs
+            ]
+            if ds_requested:
+                confusions = getattr(self, "annotator_confusion_matrices_", None)
+                if confusions is None:
+                    raise RuntimeError(
+                        "Dawid-Skene outputs requested, but no fitted "
+                        "annotator confusion matrices are available."
+                    )
+                confusions = np.asarray(confusions, dtype=float)
+                p_class_ds = None
+
+                if "annotator_perf" in ds_requested:
+                    p_class_ds = np.asarray(p_class, dtype=float)
+                    conf_diag = np.diagonal(confusions, axis1=1, axis2=2)
+                    p_perf = np.einsum(
+                        "nk,mk->nm", p_class_ds, conf_diag, optimize=True
+                    )
+                    model_named["annotator_perf"] = p_perf.astype(
+                        np.float32, copy=False
+                    )
+
+                if "annotator_class" in ds_requested:
+                    if p_class_ds is None:
+                        p_class_ds = np.asarray(p_class, dtype=float)
+                    p_annot = np.einsum(
+                        "nk,mkl->nml", p_class_ds, confusions, optimize=True
+                    )
+                    model_named["annotator_class"] = p_annot.astype(
+                        np.float32, copy=False
+                    )
+
+                if "annotator_confusion_matrices" in ds_requested:
+                    model_named["annotator_confusion_matrices"] = (
+                        confusions.astype(np.float32, copy=False)
+                    )
+
             # Initialize fallbacks if the classifier hasn't been fitted before.
-            self._initialize_fallbacks(
-                fw_out[0] if isinstance(fw_out, tuple) else fw_out
-            )
-            return fw_out
+            self._initialize_fallbacks(p_class)
+
+            if not extra_outputs:
+                return p_class
+            ordered = [model_named[name] for name in extra_outputs]
+            return (p_class, *ordered)
 
         def _build_neural_net_param_overrides(self, X, y):
             return {
                 "criterion__reduction": "mean",
-                "criterion__ignore_index": -1,
-                "module__n_classes": len(self.classes_),
-                "module__n_annotators": self.n_annotators_,
             }
 
     class _AggregateModule(_MultiAnnotatorClassificationModule):
-        """Crowd Layer Module
-
-        Crowd Layer [1]_ is a layer added at the end of a classifying neural
-        network and allows us to train deep neural networks end-to-end,
-        directly from the noisy labels of multiple annotators, using only
-        backpropagation.
+        """Classification module wrapper used by :class:`AggregateClassifier`.
 
         Parameters
         ----------
-        n_classes : int
-            Number of classes.
-        n_annotators : int
-            Number of annotators.
         clf_module : nn.Module or nn.Module.__class__
             Classifier backbone/head that maps `x -> logits_class` or
             `(logits_class, x_embed)`. If it returns only logits, `x_embed` is
@@ -362,14 +469,10 @@ try:
         clf_module_param_dict : dict
             Keyword args for constructing `clf_module` if a class is passed.
 
-        References
-        ----------
-        .. [1] Rodrigues, Filipe, and Francisco Pereira. "Deep Learning from
-           Crowds." AAAI Conference on Artificial Intelligence, 2018.
         """
 
         def __init__(
-            self, n_classes, n_annotators, clf_module, clf_module_param_dict
+            self, clf_module, clf_module_param_dict
         ):
             super().__init__(
                 clf_module=clf_module,
@@ -378,28 +481,17 @@ try:
                 full_forward_outputs=[
                     "logits_class",
                     "x_embed",
-                    "p_annot_perf",
-                    "logits_annot",
                 ],
             )
-            self.n_classes = n_classes
-            self.n_annotators = n_annotators
 
         def forward(self, x):
             """
-            Forward pass through the classification module and optionally
-            through the crowd layer.
+            Forward pass through the wrapped classification module.
 
             Parameters
             ----------
             x : torch.Tensor of shape (batch_size, ...)
                 Input samples.
-            input_ids : torch.Tensor of shape (batch_size, 2), default=None
-                - If a tensor is given, `input_ids[:, 0]` are sample indices
-                  and `input_ids[:, 1]` are annotator indices. One output row
-                  is produced per (sample, annotator) pair.
-                - If `input_ids=None`, all combinations of samples and
-                  annotators are propagated through the crowd-layer.
 
             Returns
             -------
@@ -408,15 +500,6 @@ try:
             x_embed : torch.Tensor of shape (batch_size, ...), optional
                 Learned embeddings of samples. Only returned if "x_embed" in
                 `self.forward_return`.
-            p_annot_perf : torch.Tensor of shape (batch_size, n_annotators), \
-                    optional
-                Estimated performance, i.e., label correctness probability, per
-                sample-annotator pair.
-            logits_annot : torch.Tensor of shape (batch_size, n_annotators,\
-                    n_classes) or (len(input_ids), n_classes), optional
-                Annotation logits for sample-annotator pairs. Only returned
-                if "logits_annot" in self.forward_return. Shape depends on
-                whether `input_ids` is given or `None`.
             """
             # Inference of classification model.
             logits_class, x_embed = self.clf_module_forward(x)
@@ -426,24 +509,324 @@ try:
             if "logits_class" in self.forward_return:
                 out.append(logits_class)
             if "x_embed" in self.forward_return:
-                out.append(x_embed.detach().flatten(start_dim=1))
-
-            # Add annotator logits / performances to `out` if required.
-            if (
-                "logits_annot" in self.forward_return
-                or "p_annot_perf" in self.forward_return
-            ):
-                p_class = F.softmax(logits_class, dim=-1)
-
-                # Expected annotator performance: (n_samples, n_annotators).
-                if "p_annot_perf" in self.forward_return:
-                    out.append(None)
-
-                # Expected annotator outputs / logits for labels.
-                if "logits_annot" in self.forward_return:
-                    out.append(None)
+                out.append(x_embed.flatten(start_dim=1))
 
             return out[0] if len(out) == 1 else tuple(out)
+
+
+    def _normalize_rows(arr, eps=1e-12):
+        arr = np.asarray(arr, dtype=float)
+        row_sum = arr.sum(axis=1, keepdims=True)
+        out = np.zeros_like(arr, dtype=float)
+        valid = row_sum[:, 0] > eps
+        if np.any(valid):
+            out[valid] = arr[valid] / row_sum[valid]
+        return out
+    
+
+    def _estimate_confusions(
+        y: np.ndarray,
+        observed: np.ndarray,
+        posteriors: np.ndarray,
+        n_classes: int,
+        smoothing: float = 0.0,
+    ) -> np.ndarray:
+        """Estimate annotator confusion matrices from posterior class probabilities.
+
+        Parameters
+        ----------
+        y : ndarray of shape (n_samples, n_annotators)
+            Integer-encoded annotator labels for the covered samples. Missing
+            entries must already be replaced by arbitrary dummy values because they
+            are ignored using ``observed``.
+
+        observed : ndarray of shape (n_samples, n_annotators)
+            Boolean mask indicating which annotator labels are observed.
+
+        posteriors : ndarray of shape (n_samples, n_classes)
+            Posterior probabilities of the latent true classes for the covered
+            samples.
+
+        n_classes : int
+            Number of classes.
+
+        smoothing : float, default=0.0
+            Additive smoothing applied to each row of each annotator confusion
+            matrix before normalization.
+
+        Returns
+        -------
+        confusions : ndarray of shape (n_annotators, n_classes, n_classes)
+            Estimated annotator confusion matrices. Entry
+            ``confusions[a, i, j]`` is the estimated probability that annotator
+            ``a`` outputs observed label ``j`` when the latent true class is
+            ``i``.
+
+        Notes
+        -----
+        Each row of each annotator confusion matrix is estimated by aggregating the
+        posterior responsibilities of all samples for the corresponding latent true
+        class and normalizing over observed labels.
+        """
+        y = np.asarray(y, dtype=int)
+        observed = np.asarray(observed)
+        posteriors = np.asarray(posteriors)
+
+        n_annotators = y.shape[1]
+        confusions = np.empty((n_annotators, n_classes, n_classes), dtype=float)
+
+        for annot in range(n_annotators):
+            ann_obs = observed[:, annot]
+            labels_ann = y[ann_obs, annot]
+
+            for c in range(n_classes):
+                row = np.full(n_classes, smoothing, dtype=float)
+                if labels_ann.size > 0:
+                    row += np.bincount(
+                        labels_ann,
+                        weights=posteriors[ann_obs, c],
+                        minlength=n_classes,
+                    )
+                row_sum = row.sum()
+                confusions[annot, c] = (
+                    row / row_sum if row_sum > 0 else 1.0 / n_classes
+                )
+
+        return confusions
+
+
+    def dawid_skene(
+        y: np.ndarray,
+        n_classes: int,
+        max_iter: int = 100,
+        tol: float = 1e-5,
+        smoothing: float = 0.0,
+        eps: float = 1e-12,
+    ):
+        """Estimate latent class posteriors and annotator confusion matrices
+        with the Dawid-Skene algorithm.
+
+        This function applies the expectation-maximization (EM) algorithm for
+        multi-annotator classification. It estimates the posterior probabilities
+        of the latent true class for each sample, the class prior, and one
+        confusion matrix per annotator.
+
+        Missing annotations are assumed to be encoded as ``-1``. Observed labels
+        are assumed to be integer-encoded as ``0, ..., n_classes - 1``.
+
+        Parameters
+        ----------
+        y : ndarray of shape (n_samples, n_annotators)
+            Observed annotator labels. Each entry must either be an integer in
+            ``{0, ..., n_classes - 1}`` or ``-1`` to indicate a missing label.
+
+        n_classes : int
+            Number of classes.
+
+        max_iter : int, default=100
+            Maximum number of EM iterations.
+
+        tol : float, default=1e-5
+            Convergence tolerance. The algorithm stops when the maximum absolute
+            change in the posterior probabilities between two consecutive EM
+            iterations is at most ``tol``.
+
+        smoothing : float, default=0.0
+            Additive smoothing applied to each row of each annotator confusion
+            matrix during the M-step. This can improve numerical stability when
+            some class-label combinations are rarely or never observed.
+
+        eps : float, default=1e-12
+            Small positive constant used for numerical stability, for example when
+            normalizing probabilities or taking logarithms.
+
+        Returns
+        -------
+        posteriors : ndarray of shape (n_samples, n_classes)
+            Estimated posterior class probabilities for all samples. Samples with
+            no observed annotations receive the estimated class prior.
+
+        confusions : ndarray of shape (n_annotators, n_classes, n_classes)
+            Estimated annotator confusion matrices. Entry
+            ``confusions[a, i, j]`` corresponds to the estimated probability that
+            annotator ``a`` assigns observed label ``j`` when the latent true class
+            is ``i``.
+
+        class_prior : ndarray of shape (n_classes,)
+            Estimated prior probabilities of the latent classes.
+
+        info : dict
+            Dictionary with diagnostic information. It contains the following keys:
+
+            - ``"n_iter"`` : int
+            Number of EM iterations performed.
+            - ``"converged"`` : bool
+            Whether the convergence criterion was met.
+            - ``"n_covered"`` : int
+            Number of samples with at least one observed annotation.
+            - ``"n_uncovered"`` : int
+            Number of samples with no observed annotations.
+
+        Notes
+        -----
+        The EM procedure is applied only to samples with at least one observed
+        annotation. Samples without any annotation do not contribute to the
+        parameter updates and are assigned the estimated class prior in the
+        returned posterior matrix.
+
+        The confusion matrices follow the convention
+
+        ``confusions[a, i, j] = P(y^(a) = j | z = i)``,
+
+        where ``z`` denotes the latent true class and ``y^(a)`` the label provided
+        by annotator ``a``.
+        """
+        y = np.asarray(y)
+        if y.ndim != 2:
+            raise ValueError("y must have shape (n_samples, n_annotators).")
+        if n_classes <= 0:
+            raise ValueError("n_classes must be a positive integer.")
+
+        observed_mask = y != -1
+        invalid = observed_mask & ((y < 0) | (y >= n_classes))
+        if np.any(invalid):
+            invalid_labels = np.unique(y[invalid])
+            raise ValueError(
+                "Observed labels must be in {0, ..., n_classes - 1} and missing "
+                f"labels must be -1, but found invalid labels "
+                f"{invalid_labels.tolist()}."
+            )
+
+        n_samples, n_annotators = y.shape
+        max_iter = int(max(max_iter, 1))
+        tol = float(max(tol, 0.0))
+        smoothing = float(max(smoothing, 0.0))
+
+        # Keep only samples with at least one observed annotation for EM.
+        covered = observed_mask.any(axis=1)
+        n_covered = int(np.sum(covered))
+
+        # Degenerate case: no observed labels anywhere.
+        if n_covered == 0:
+            class_prior = np.full(n_classes, 1.0 / n_classes, dtype=float)
+            posteriors = np.tile(class_prior, (n_samples, 1))
+            confusions = np.full(
+                (n_annotators, n_classes, n_classes),
+                1.0 / n_classes,
+                dtype=float,
+            )
+            info = {
+                "n_iter": 0,
+                "converged": True,
+                "n_covered": 0,
+                "n_uncovered": int(n_samples),
+            }
+            return posteriors, confusions, class_prior, info
+
+        y_cov = y[covered].copy()
+        observed_cov = observed_mask[covered]
+
+        # Replace missing entries by a harmless dummy label. These positions are
+        # always ignored via `observed_cov`.
+        y_cov[~observed_cov] = 0
+
+        votes = compute_vote_vectors(
+            y[covered], classes=np.arange(n_classes), missing_label=-1
+        )
+        posteriors_cov = _normalize_rows(votes, eps=eps)
+
+        if not np.any(observed_cov.sum(axis=1) >= 2):
+            y_mv = majority_vote(
+                y=y[covered],
+                missing_label=-1,
+                classes=np.arange(n_classes),
+            )
+            posteriors_cov = np.eye(n_classes, dtype=float)[y_mv]
+            class_prior = posteriors_cov.mean(axis=0)
+            class_prior = class_prior / np.maximum(class_prior.sum(), eps)
+            confusions = _estimate_confusions(
+                y=y_cov,
+                observed=observed_cov,
+                posteriors=posteriors_cov,
+                n_classes=n_classes,
+                smoothing=smoothing,
+            )
+            posteriors = np.tile(class_prior, (n_samples, 1))
+            posteriors[covered] = posteriors_cov
+            info = {
+                "n_iter": 0,
+                "converged": True,
+                "n_covered": n_covered,
+                "n_uncovered": int(n_samples - n_covered),
+                "fallback": "majority_voting",
+            }
+            return posteriors, confusions, class_prior, info
+
+        class_prior = posteriors_cov.mean(axis=0)
+        class_prior = class_prior / np.maximum(class_prior.sum(), eps)
+
+        confusions = _estimate_confusions(
+            y=y_cov,
+            observed=observed_cov,
+            posteriors=posteriors_cov,
+            n_classes=n_classes,
+            smoothing=smoothing,
+        )
+
+        converged = False
+        n_iter = 0
+
+        for it in range(max_iter):
+            old = posteriors_cov.copy()
+            log_post = np.tile(
+                np.log(np.clip(class_prior, eps, 1.0)),
+                (n_covered, 1),
+            )
+
+            for annot in range(n_annotators):
+                ann_obs = observed_cov[:, annot]
+                if not np.any(ann_obs):
+                    continue
+
+                labels_ann = np.ravel(y_cov[ann_obs, annot]).astype(
+                    np.int64, copy=False
+                )
+                ann_likelihood = confusions[annot].T[labels_ann]
+                log_post[ann_obs] += np.log(
+                    np.clip(ann_likelihood, eps, 1.0)
+                )
+
+            log_post -= log_post.max(axis=1, keepdims=True)
+            posteriors_cov = np.exp(log_post)
+            posteriors_cov = _normalize_rows(posteriors_cov, eps=eps)
+
+            class_prior = posteriors_cov.mean(axis=0)
+            class_prior = class_prior / np.maximum(class_prior.sum(), eps)
+
+            confusions = _estimate_confusions(
+                y=y_cov,
+                observed=observed_cov,
+                posteriors=posteriors_cov,
+                n_classes=n_classes,
+                smoothing=smoothing,
+            )
+
+            n_iter = it + 1
+            if np.max(np.abs(posteriors_cov - old)) <= tol:
+                converged = True
+                break
+
+        # Expand posteriors back to the full sample set.
+        posteriors = np.tile(class_prior, (n_samples, 1))
+        posteriors[covered] = posteriors_cov
+
+        info = {
+            "n_iter": n_iter,
+            "converged": converged,
+            "n_covered": n_covered,
+            "n_uncovered": int(n_samples - n_covered),
+        }
+        return posteriors, confusions, class_prior, info
 
 except ImportError:  # pragma: no cover
     pass
