@@ -1,16 +1,16 @@
 defaults:
-  - al: food101
+  - al: banking77
   - classifier: annot_mix
   - paths: default
-  - dataset: food101
-  - embedder@classification_embedder: dinov2
-  - embedder@simulation_embedder: clip
+  - dataset: banking77
+  - embedder@classification_embedder: mpnetv2
+  - embedder@simulation_embedder: minilmv2
   - pipeline: default
-  - simulation: food101
+  - simulation: banking77
   - module: mlp
   - training: default
   - scheduler: step_ratio_1
-  - sample@sample.init: typi_clust
+  - sample@sample.init: random
   - sample@sample.actual: random
   - scorer@scorer.init: random
   - scorer@scorer.actual: ks_big
@@ -24,7 +24,7 @@ results_path: ${paths.results_path}
 device: "cuda"
 missing_label: -1
 exit_after_simulation: False
-seed: 10
+seed: 0
 hydra:
   run:
     dir: .

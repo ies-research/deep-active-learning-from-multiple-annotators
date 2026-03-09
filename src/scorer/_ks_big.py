@@ -111,6 +111,10 @@ class KernelSmoothedBayesianGain(PairScorer):
     channel_variant : {"channel", "scalar_uniform_confusion", /
             "diag_uniform_confusion","full_confusion"}, default="channel"
         Annotator noise parameterization used for IG computation.
+    class_prior : {"classifier", "uniform"}, default="classifier"
+        Prior used for the latent class in the IG computation:
+        - "classifier": use the classifier posterior ``p(Y|x)``.
+        - "uniform": use a uniform prior over classes.
     use_ess_beta : bool, default=True
         If True, map the kernel-weighted correctness evidence to a Beta 
         posterior using ESS-based concentration instead of raw weighted counts.
@@ -125,7 +129,8 @@ class KernelSmoothedBayesianGain(PairScorer):
         (only used if `use_ess_label_dirichlet=True`).
     top_m : int or None, default=2
         If not None, approximate IG in top-M + "other" reduced label space.
-        Currently used only for `channel_variant="channel"`.
+        Currently used only for `channel_variant="channel"` together with
+        `class_prior="classifier"`.
     n_theta_samples : int, default=1
         Number of Monte Carlo draws for latent channel parameters. For variants
         with Beta accuracies, this controls Beta draws. If <=0, posterior means
@@ -158,6 +163,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         use_annotator_embeddings: bool = True,
         channel_label_dirichlet_strength: float = 1.0,
         channel_variant: str = "channel",
+        class_prior: str = "classifier",
         use_ess_beta: bool = False,
         tau_beta: float = 1.0,
         use_ess_label_dirichlet: bool = False,
@@ -179,6 +185,7 @@ class KernelSmoothedBayesianGain(PairScorer):
             channel_label_dirichlet_strength
         )
         self.channel_variant = str(channel_variant)
+        self.class_prior = str(class_prior)
         self.use_ess_beta = bool(use_ess_beta)
         self.tau_beta = float(tau_beta)
         self.use_ess_label_dirichlet = bool(use_ess_label_dirichlet)
@@ -216,6 +223,10 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "channel_wrong_label_mode must be one of "
                 "{'normalize', 'sample_dirichlet_wrong'}"
             )
+        if self.class_prior not in {"classifier", "uniform"}:
+            raise ValueError(
+                "class_prior must be one of {'classifier', 'uniform'}"
+            )
 
     def _compute(
         self,
@@ -248,6 +259,15 @@ class KernelSmoothedBayesianGain(PairScorer):
                 f"Unknown channel_variant={self.channel_variant!r}. "
                 f"Expected one of {sorted(valid_variants)}."
             )
+        if (
+            self.class_prior == "uniform"
+            and self.channel_variant == "channel"
+            and self.top_m is not None
+        ):
+            raise ValueError(
+                "top_m is only supported with class_prior='classifier' "
+                "for channel_variant='channel'."
+            )
 
         # Candidate sample posteriors/embeddings and (optionally) annotator embeddings.
         cand_extra_outputs = ["embeddings"]
@@ -271,6 +291,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         r_cand = np.asarray(r_cand, dtype=float)
         r_cand = np.clip(r_cand, 1e-15, 1.0)
         r_cand = r_cand / np.maximum(r_cand.sum(axis=1, keepdims=True), 1e-15)
+        r_cand_prior = self._resolve_class_prior(r_cand)
         X_cand_emb = _l2_normalize(np.asarray(X_cand_emb, dtype=float))
 
         is_lbld = is_labeled(y=y, missing_label=clf.missing_label)
@@ -508,7 +529,7 @@ class KernelSmoothedBayesianGain(PairScorer):
                 and (self.top_m is None or self.top_m >= K)
             ):
                 U_col = self._ig_channel_full_batch(
-                    r=r_cand,
+                    r=r_cand_prior,
                     alpha=alpha,
                     beta=beta,
                     gamma=gamma_cand,
@@ -525,7 +546,7 @@ class KernelSmoothedBayesianGain(PairScorer):
                 and self.top_m < K
             ):
                 U_col = self._ig_channel_topm_batch(
-                    r=r_cand,
+                    r=r_cand_prior,
                     alpha=alpha,
                     beta=beta,
                     gamma=gamma_cand,
@@ -539,7 +560,7 @@ class KernelSmoothedBayesianGain(PairScorer):
 
             if self.channel_variant == "scalar_uniform_confusion":
                 U_col = self._ig_scalar_uniform_confusion_batch(
-                    r=r_cand,
+                    r=r_cand_prior,
                     alpha=alpha,
                     beta=beta,
                     rng=rng,
@@ -551,7 +572,7 @@ class KernelSmoothedBayesianGain(PairScorer):
 
             if self.channel_variant == "diag_uniform_confusion":
                 U_col = self._ig_diag_uniform_confusion_batch(
-                    r=r_cand,
+                    r=r_cand_prior,
                     alpha=alpha_diag,
                     beta=beta_diag,
                     rng=rng,
@@ -563,7 +584,7 @@ class KernelSmoothedBayesianGain(PairScorer):
 
             if self.channel_variant == "full_confusion":
                 U_col = self._ig_full_confusion_batch(
-                    r=r_cand,
+                    r=r_cand_prior,
                     delta=confusion_rows,
                     rng=rng,
                 )
@@ -580,6 +601,19 @@ class KernelSmoothedBayesianGain(PairScorer):
             U = np.where(available_mask, U, np.nan)
 
         return U
+
+    def _resolve_class_prior(self, r: np.ndarray) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        if r.ndim != 2:
+            raise ValueError(
+                f"r must have shape (n_samples, n_classes), got {r.shape}."
+            )
+        if self.class_prior == "classifier":
+            return r
+        K = r.shape[1]
+        if K < 2:
+            raise ValueError("IG requires at least 2 classes.")
+        return np.full_like(r, 1.0 / K, dtype=float)
 
     # -------------------------
     # IG computation
