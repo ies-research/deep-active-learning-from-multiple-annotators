@@ -1,7 +1,7 @@
 import numpy as np
 
 from ._base import PairScorer
-from ._utils import information_gain
+from ._utils import expected_score_gain
 
 
 class InformationGainPairScorer(PairScorer):
@@ -28,6 +28,11 @@ class InformationGainPairScorer(PairScorer):
     - ``"classifier"``: use ``clf.predict_proba(X)``.
     - ``"uniform"``: ignore classifier class probabilities and use a uniform
       prior over classes.
+    The uncertainty reduction functional is controlled by ``gain_type``:
+
+    - ``"entropy"``: standard information gain.
+    - ``"margin"``: expected reduction in margin-based uncertainty.
+    - ``"brier"``: expected reduction in multiclass Brier uncertainty.
     """
 
     def __init__(
@@ -35,6 +40,7 @@ class InformationGainPairScorer(PairScorer):
         *,
         channel_variant: str = "channel",
         class_prior: str = "classifier",
+        gain_type: str = "entropy",
         eps: float = 1e-12,
         log_base: float = 2.0,
         normalize: bool = True,
@@ -42,6 +48,7 @@ class InformationGainPairScorer(PairScorer):
     ):
         self.channel_variant = str(channel_variant)
         self.class_prior = str(class_prior)
+        self.gain_type = str(gain_type)
         self.eps = float(eps)
         self.log_base = float(log_base)
         self.normalize = bool(normalize)
@@ -71,6 +78,10 @@ class InformationGainPairScorer(PairScorer):
         if self.class_prior not in {"classifier", "uniform"}:
             raise ValueError(
                 "class_prior must be one of {'classifier', 'uniform'}."
+            )
+        if self.gain_type not in {"entropy", "margin", "brier"}:
+            raise ValueError(
+                "gain_type must be one of {'entropy', 'margin', 'brier'}."
             )
 
         n_sel_s = len(sample_indices)
@@ -114,14 +125,10 @@ class InformationGainPairScorer(PairScorer):
                 n_annotators_total=n_annotators_total,
                 name="annotator_class",
             )
-            U = information_gain(
+            U = self._pair_gain(
                 P_prior,
                 P_perf=annotator_perf,
                 P_annot=annotator_class,
-                eps=self.eps,
-                log_base=self.log_base,
-                normalize=self.normalize,
-                batch_size=self.batch_size,
             )
         else:
             annotator_perf = self._take_selected_annotators(
@@ -211,13 +218,9 @@ class InformationGainPairScorer(PairScorer):
                 "(n_samples, n_annotators, n_classes, n_classes)."
             )
         r = np.broadcast_to(P[:, None, :], C_pair.shape[:-1])
-        return information_gain(
+        return self._pair_gain(
             r,
             C=C_pair,
-            eps=self.eps,
-            log_base=self.log_base,
-            normalize=self.normalize,
-            batch_size=self.batch_size,
         )
 
     def _information_gain_from_accuracy_only(
@@ -242,9 +245,25 @@ class InformationGainPairScorer(PairScorer):
         diag_idx = np.arange(n_classes)
         C[..., diag_idx, diag_idx] = theta[..., None]
         r = np.broadcast_to(P[:, None, :], C.shape[:-1])
-        return information_gain(
+        return self._pair_gain(
             r,
             C=C,
+        )
+
+    def _pair_gain(
+        self,
+        P: np.ndarray,
+        *,
+        P_perf: np.ndarray | None = None,
+        P_annot: np.ndarray | None = None,
+        C: np.ndarray | None = None,
+    ) -> np.ndarray:
+        return expected_score_gain(
+            P,
+            P_perf=P_perf,
+            P_annot=P_annot,
+            C=C,
+            score=self.gain_type,
             eps=self.eps,
             log_base=self.log_base,
             normalize=self.normalize,

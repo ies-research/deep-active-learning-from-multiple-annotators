@@ -1,17 +1,17 @@
 defaults:
-  - al: banking77
+  - al: dermamnist7
   - classifier: annot_mix
   - paths: default
-  - dataset: banking77
-  - embedder@classification_embedder: mpnetv2
-  - embedder@simulation_embedder: minilmv2
+  - dataset: dermamnist7
+  - embedder@classification_embedder: dinov2
+  - embedder@simulation_embedder: clip
   - pipeline: default
-  - simulation: banking77
+  - simulation: dermamnist7
   - module: mlp
   - training: default
   - scheduler: step_ratio_1
-  - sample@sample.init: random
-  - sample@sample.actual: random
+  - sample@sample.init: typi_clust
+  - sample@sample.actual: falcun
   - scorer@scorer.init: random
   - scorer@scorer.actual: ks_big
   - assigner@assigner.init: quota_sample

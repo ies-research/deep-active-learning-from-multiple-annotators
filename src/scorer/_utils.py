@@ -5,12 +5,39 @@ def _normalize_axis(X: np.ndarray, *, axis: int, eps: float) -> np.ndarray:
     return X / np.maximum(X.sum(axis=axis, keepdims=True), eps)
 
 
-def information_gain(
+def _score_from_posterior(
+    P: np.ndarray,
+    *,
+    score: str,
+    eps: float = 1e-12,
+    log_base: float = 2.0,
+) -> np.ndarray:
+    P = np.asarray(P, dtype=float)
+    P = _normalize_axis(np.clip(P, eps, 1.0), axis=-1, eps=eps)
+
+    if score == "entropy":
+        log_denom = np.log(log_base) if log_base != np.e else 1.0
+        return -(P * (np.log(P) / log_denom)).sum(axis=-1)
+    if score == "margin":
+        if P.shape[-1] < 2:
+            raise ValueError("Margin score requires at least 2 classes.")
+        P_sorted = np.sort(P, axis=-1)
+        return 1.0 - (P_sorted[..., -1] - P_sorted[..., -2])
+    if score == "brier":
+        return 1.0 - np.sum(P * P, axis=-1)
+    raise ValueError(
+        f"Unknown score={score!r}. Expected one of "
+        "{'entropy', 'margin', 'brier'}."
+    )
+
+
+def expected_score_gain(
     P: np.ndarray,
     P_perf: np.ndarray | None = None,
     P_annot: np.ndarray | None = None,
     *,
     C: np.ndarray | None = None,
+    score: str = "entropy",
     eps: float = 1e-12,
     log_base: float = 2.0,
     normalize: bool = True,
@@ -18,10 +45,14 @@ def information_gain(
     batch_size: int | None = None,
 ) -> np.ndarray:
     """
-    Compute expected information gain in either of two modes:
+    Compute expected posterior score reduction in either of two modes:
 
-    - `channel` mode (legacy): pass `P_perf` and `P_annot`.
+    - `channel` mode: pass `P_perf` and `P_annot`.
     - `confusion` mode: pass `C` directly.
+
+    The utility is
+        u(P) - E_y[u(P(. | y))]
+    where `u` is the uncertainty score selected by `score`.
 
     Parameters
     ----------
@@ -38,10 +69,12 @@ def information_gain(
     C : np.ndarray or None, default=None
         Confusion mode only. Confusion matrices with shape
         `(..., n_classes, n_classes)`.
+    score : {"entropy", "margin", "brier"}, default="entropy"
+        Uncertainty score reduced in expectation after observing a label.
     eps : float, default=1e-12
         Numerical stability constant for clipping before logs/divisions.
     log_base : float, default=2.0
-        Logarithm base. Use 2.0 for bits, np.e for nats.
+        Logarithm base, used only when `score="entropy"`.
     normalize : bool, default=True
         If True, normalize probability inputs along their stochastic axes.
     check_input : bool, default=True
@@ -52,11 +85,16 @@ def information_gain(
 
     Returns
     -------
-    IG : np.ndarray
-        Information gain with shape:
+    gain : np.ndarray
+        Expected score gain with shape:
         - channel mode: `(n_samples, n_annotators)`.
         - confusion mode: `P.shape[:-1]`.
     """
+    score = str(score).lower()
+    if score not in {"entropy", "margin", "brier"}:
+        raise ValueError(
+            "score must be one of {'entropy', 'margin', 'brier'}."
+        )
     if batch_size is not None and batch_size <= 0:
         raise ValueError("batch_size must be > 0 when provided.")
     if C is not None:
@@ -69,9 +107,10 @@ def information_gain(
         r = np.asarray(P, dtype=float)
         C = np.asarray(C, dtype=float)
         if batch_size is None or r.ndim == 1:
-            return _information_gain_from_confusion_batch(
+            return _score_gain_from_confusion_batch(
                 r=r,
                 C=C,
+                score=score,
                 eps=eps,
                 log_base=log_base,
                 normalize=normalize,
@@ -79,18 +118,19 @@ def information_gain(
             )
 
         n0 = r.shape[0]
-        IG = np.empty(r.shape[:-1], dtype=float)
+        gain = np.empty(r.shape[:-1], dtype=float)
         for start in range(0, n0, batch_size):
             stop = min(start + batch_size, n0)
-            IG[start:stop] = _information_gain_from_confusion_batch(
+            gain[start:stop] = _score_gain_from_confusion_batch(
                 r=r[start:stop],
                 C=C[start:stop],
+                score=score,
                 eps=eps,
                 log_base=log_base,
                 normalize=normalize,
                 check_input=check_input,
             )
-        return IG
+        return gain
 
     if (P_perf is None) != (P_annot is None):
         raise ValueError(
@@ -143,9 +183,10 @@ def information_gain(
             check_input=False,
         )
         r_chunk = np.broadcast_to(P_chunk[:, None, :], P_annot_chunk.shape)
-        return _information_gain_from_confusion_batch(
+        return _score_gain_from_confusion_batch(
             r=r_chunk,
             C=C_chunk,
+            score=score,
             eps=eps,
             log_base=log_base,
             normalize=False,
@@ -156,13 +197,90 @@ def information_gain(
     if batch_size is None:
         return _compute_chunk(P, P_perf, P_annot)
 
-    IG = np.empty(P_perf.shape, dtype=float)
+    gain = np.empty(P_perf.shape, dtype=float)
     for start in range(0, n, batch_size):
         stop = min(start + batch_size, n)
-        IG[start:stop] = _compute_chunk(
+        gain[start:stop] = _compute_chunk(
             P[start:stop], P_perf[start:stop], P_annot[start:stop]
         )
-    return IG
+    return gain
+
+
+def information_gain(
+    P: np.ndarray,
+    P_perf: np.ndarray | None = None,
+    P_annot: np.ndarray | None = None,
+    *,
+    C: np.ndarray | None = None,
+    eps: float = 1e-12,
+    log_base: float = 2.0,
+    normalize: bool = True,
+    check_input: bool = True,
+    batch_size: int | None = None,
+) -> np.ndarray:
+    """
+    Compatibility wrapper for entropy-based expected posterior reduction.
+    """
+    return expected_score_gain(
+        P,
+        P_perf=P_perf,
+        P_annot=P_annot,
+        C=C,
+        score="entropy",
+        eps=eps,
+        log_base=log_base,
+        normalize=normalize,
+        check_input=check_input,
+        batch_size=batch_size,
+    )
+
+
+def margin_gain(
+    P: np.ndarray,
+    P_perf: np.ndarray | None = None,
+    P_annot: np.ndarray | None = None,
+    *,
+    C: np.ndarray | None = None,
+    eps: float = 1e-12,
+    normalize: bool = True,
+    check_input: bool = True,
+    batch_size: int | None = None,
+) -> np.ndarray:
+    return expected_score_gain(
+        P,
+        P_perf=P_perf,
+        P_annot=P_annot,
+        C=C,
+        score="margin",
+        eps=eps,
+        normalize=normalize,
+        check_input=check_input,
+        batch_size=batch_size,
+    )
+
+
+def brier_score_gain(
+    P: np.ndarray,
+    P_perf: np.ndarray | None = None,
+    P_annot: np.ndarray | None = None,
+    *,
+    C: np.ndarray | None = None,
+    eps: float = 1e-12,
+    normalize: bool = True,
+    check_input: bool = True,
+    batch_size: int | None = None,
+) -> np.ndarray:
+    return expected_score_gain(
+        P,
+        P_perf=P_perf,
+        P_annot=P_annot,
+        C=C,
+        score="brier",
+        eps=eps,
+        normalize=normalize,
+        check_input=check_input,
+        batch_size=batch_size,
+    )
 
 
 def _channel_confusion_from_theta_g_batch(
@@ -232,17 +350,18 @@ def _channel_confusion_from_theta_g_batch(
     return C
 
 
-def _information_gain_from_confusion_batch(
+def _score_gain_from_confusion_batch(
     *,
     r: np.ndarray,
     C: np.ndarray,
+    score: str = "entropy",
     eps: float = 1e-12,
     log_base: float = 2.0,
     normalize: bool = True,
     check_input: bool = True,
 ) -> np.ndarray:
     """
-    Vectorized IG from class posteriors and confusion matrices.
+    Vectorized expected posterior score reduction from posteriors and channels.
 
     Parameters
     ----------
@@ -259,10 +378,12 @@ def _information_gain_from_confusion_batch(
     check_input : bool, default=True
         If True, validate input shapes.
 
+    score : {"entropy", "margin", "brier"}, default="entropy"
+        Uncertainty score reduced in expectation.
     Returns
     -------
-    IG : np.ndarray of shape (...)
-        Information gain for each leading batch element.
+    gain : np.ndarray of shape (...)
+        Expected score gain for each leading batch element.
     """
     r = np.asarray(r, dtype=float)
     C = np.asarray(C, dtype=float)
@@ -296,12 +417,16 @@ def _information_gain_from_confusion_batch(
 
     joint = r[..., :, None] * C
     post = joint / np.maximum(joint.sum(axis=-2, keepdims=True), eps)
+    post = np.moveaxis(post, -2, -1)
 
-    log_denom = np.log(log_base) if log_base != np.e else 1.0
-    H_prior = -(r * (np.log(np.clip(r, eps, 1.0)) / log_denom)).sum(axis=-1)
-    H_post = -(
-        post * (np.log(np.clip(post, eps, 1.0)) / log_denom)
-    ).sum(axis=-2)
-    H_cond = (py * H_post).sum(axis=-1)
-
-    return np.maximum(H_prior - H_cond, 0.0)
+    prior_score = _score_from_posterior(
+        r, score=score, eps=eps, log_base=log_base
+    )
+    post_scores = _score_from_posterior(
+        post, score=score, eps=eps, log_base=log_base
+    )
+    conditional_score = (py * post_scores).sum(axis=-1)
+    gain = prior_score - conditional_score
+    if score in {"entropy", "brier"}:
+        gain = np.maximum(gain, 0.0)
+    return gain

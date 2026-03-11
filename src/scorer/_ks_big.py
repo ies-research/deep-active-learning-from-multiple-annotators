@@ -7,7 +7,7 @@ from sklearn.utils import check_random_state
 
 from skactiveml.utils import is_labeled
 from ._base import PairScorer
-from ._utils import information_gain
+from ._utils import expected_score_gain
 
 
 def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -18,7 +18,8 @@ def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 
 class KernelSmoothedBayesianGain(PairScorer):
     """
-    Pair scorer using information gain under a kernel-smoothed annotator model.
+    Pair scorer using expected uncertainty reduction under a
+    kernel-smoothed annotator model.
 
     For a candidate pair (x, a), this scorer supports multiple channel
     variants:
@@ -66,10 +67,9 @@ class KernelSmoothedBayesianGain(PairScorer):
     not available (or are not global), the scorer falls back to exact annotator
     identity weighting: k_a(a_i, a) = 1[a_i = a].
 
-    Utility is the mutual information:
-        IG(x,a) = I(Z; Y | x, a)
-    evaluated via Monte Carlo samples from Beta/Dirichlet 
-    (or using posterior means).
+    Utility is an expected reduction in predictive uncertainty, evaluated via
+    Monte Carlo samples from Beta/Dirichlet (or using posterior means). The
+    uncertainty functional is controlled by ``gain_type``.
 
     Parameters
     ----------
@@ -108,13 +108,31 @@ class KernelSmoothedBayesianGain(PairScorer):
     channel_label_dirichlet_strength : float, default=1.0
         Symmetric Dirichlet prior concentration for the fallback label
         distribution `g` in `channel_variant="channel"` only.
+    gain_type : {"entropy", "margin", "brier"}, default="entropy"
+        Uncertainty functional reduced in expectation after observing an
+        annotator label. ``"entropy"`` recovers standard information gain.
     channel_variant : {"channel", "scalar_uniform_confusion", /
             "diag_uniform_confusion","full_confusion"}, default="channel"
-        Annotator noise parameterization used for IG computation.
-    class_prior : {"classifier", "uniform"}, default="classifier"
+        Annotator noise parameterization used for gain computation.
+    class_prior : {"classifier", "uniform", "kernel"}, default="classifier"
         Prior used for the latent class in the IG computation:
         - "classifier": use the classifier posterior ``p(Y|x)``.
         - "uniform": use a uniform prior over classes.
+        - "kernel": use a kernel-smoothed Dirichlet prior built from the
+          classifier posteriors on labeled samples.
+    class_prior_strength : float, default=1.0
+        Symmetric Dirichlet prior concentration for the kernelized class prior.
+        Used only when `class_prior="kernel"`.
+    use_ess_class_prior : bool, default=False
+        If True, map kernel-weighted class evidence to the class-prior
+        Dirichlet posterior using ESS-based concentration instead of raw
+        weighted counts.
+    tau_class_prior : float, default=1.0
+        Discount factor for ESS-based class-prior Dirichlet concentration
+        (only used if `use_ess_class_prior=True`).
+    sample_class_prior : bool, default=False
+        If True and `class_prior="kernel"`, sample the class prior from the
+        kernelized Dirichlet instead of using its posterior mean.
     use_ess_beta : bool, default=True
         If True, map the kernel-weighted correctness evidence to a Beta 
         posterior using ESS-based concentration instead of raw weighted counts.
@@ -128,9 +146,10 @@ class KernelSmoothedBayesianGain(PairScorer):
         Discount factor for ESS-based Dirichlet concentration
         (only used if `use_ess_label_dirichlet=True`).
     top_m : int or None, default=2
-        If not None, approximate IG in top-M + "other" reduced label space.
-        Currently used only for `channel_variant="channel"` together with
-        `class_prior="classifier"`.
+        If not None, approximate entropy gain in top-M + "other" reduced label
+        space. Currently supported only for `gain_type="entropy"` with
+        `channel_variant="channel"` together with
+        `class_prior` in `{"classifier", "kernel"}`.
     n_theta_samples : int, default=1
         Number of Monte Carlo draws for latent channel parameters. For variants
         with Beta accuracies, this controls Beta draws. If <=0, posterior means
@@ -162,8 +181,13 @@ class KernelSmoothedBayesianGain(PairScorer):
         gamma_a="median",
         use_annotator_embeddings: bool = True,
         channel_label_dirichlet_strength: float = 1.0,
+        gain_type: str = "entropy",
         channel_variant: str = "channel",
         class_prior: str = "classifier",
+        class_prior_strength: float = 1.0,
+        use_ess_class_prior: bool = False,
+        tau_class_prior: float = 1.0,
+        sample_class_prior: bool = False,
         use_ess_beta: bool = False,
         tau_beta: float = 1.0,
         use_ess_label_dirichlet: bool = False,
@@ -184,8 +208,13 @@ class KernelSmoothedBayesianGain(PairScorer):
         self.channel_label_dirichlet_strength = float(
             channel_label_dirichlet_strength
         )
+        self.gain_type = str(gain_type)
         self.channel_variant = str(channel_variant)
         self.class_prior = str(class_prior)
+        self.class_prior_strength = float(class_prior_strength)
+        self.use_ess_class_prior = bool(use_ess_class_prior)
+        self.tau_class_prior = float(tau_class_prior)
+        self.sample_class_prior = bool(sample_class_prior)
         self.use_ess_beta = bool(use_ess_beta)
         self.tau_beta = float(tau_beta)
         self.use_ess_label_dirichlet = bool(use_ess_label_dirichlet)
@@ -223,9 +252,21 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "channel_wrong_label_mode must be one of "
                 "{'normalize', 'sample_dirichlet_wrong'}"
             )
-        if self.class_prior not in {"classifier", "uniform"}:
+        if self.class_prior not in {"classifier", "uniform", "kernel"}:
             raise ValueError(
-                "class_prior must be one of {'classifier', 'uniform'}"
+                "class_prior must be one of {'classifier', 'uniform', 'kernel'}"
+            )
+        if self.gain_type not in {"entropy", "margin", "brier"}:
+            raise ValueError(
+                "gain_type must be one of {'entropy', 'margin', 'brier'}"
+            )
+        if self.class_prior_strength <= 0:
+            raise ValueError("class_prior_strength must be > 0")
+        if self.tau_class_prior <= 0:
+            raise ValueError("tau_class_prior must be > 0")
+        if self.sample_class_prior and self.class_prior != "kernel":
+            raise ValueError(
+                "sample_class_prior=True requires class_prior='kernel'"
             )
 
     def _compute(
@@ -268,6 +309,15 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "top_m is only supported with class_prior='classifier' "
                 "for channel_variant='channel'."
             )
+        if (
+            self.gain_type != "entropy"
+            and self.channel_variant == "channel"
+            and self.top_m is not None
+        ):
+            raise ValueError(
+                "top_m is only supported with gain_type='entropy' "
+                "for channel_variant='channel'."
+            )
 
         # Candidate sample posteriors/embeddings and (optionally) annotator embeddings.
         cand_extra_outputs = ["embeddings"]
@@ -291,7 +341,6 @@ class KernelSmoothedBayesianGain(PairScorer):
         r_cand = np.asarray(r_cand, dtype=float)
         r_cand = np.clip(r_cand, 1e-15, 1.0)
         r_cand = r_cand / np.maximum(r_cand.sum(axis=1, keepdims=True), 1e-15)
-        r_cand_prior = self._resolve_class_prior(r_cand)
         X_cand_emb = _l2_normalize(np.asarray(X_cand_emb, dtype=float))
 
         is_lbld = is_labeled(y=y, missing_label=clf.missing_label)
@@ -327,6 +376,9 @@ class KernelSmoothedBayesianGain(PairScorer):
         X_obs_emb = _l2_normalize(np.asarray(X_obs_emb, dtype=float))
         m_obs = r_obs[np.arange(obs_s.size), y_obs_idx]
         m_obs = np.clip(m_obs, 0.0, 1.0)
+        _, obs_first_idx = np.unique(obs_s, return_index=True)
+        X_obs_cls_emb = X_obs_emb[obs_first_idx]
+        r_obs_cls = r_obs[obs_first_idx]
 
         eps_prior = 1e-6
         global_obs_acc_mean = float(np.mean(m_obs))
@@ -368,6 +420,14 @@ class KernelSmoothedBayesianGain(PairScorer):
             gamma_a_val = self._resolve_gamma_from_embeddings(
                 A_all, self.gamma_a
             )
+        r_cand_prior = self._resolve_class_prior(
+            r=r_cand,
+            X_cand_emb=X_cand_emb,
+            X_obs_cls_emb=X_obs_cls_emb,
+            r_obs_cls=r_obs_cls,
+            gamma_x=gamma_x_global,
+            rng=rng,
+        )
 
         # Sample-kernel weights from observed pairs to candidate samples.
         Kx_obs_cand_global = rbf_kernel(
@@ -469,7 +529,7 @@ class KernelSmoothedBayesianGain(PairScorer):
                     tau=self.tau_label_dirichlet,
                 )
 
-                # Deterministic full-K path: reuse the shared closed-form IG implementation.
+                # Deterministic full-K path: reuse the shared closed-form gain helper.
                 if (
                     self.n_theta_samples <= 0
                     and not self.sample_label_dirichlet
@@ -602,7 +662,16 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         return U
 
-    def _resolve_class_prior(self, r: np.ndarray) -> np.ndarray:
+    def _resolve_class_prior(
+        self,
+        r: np.ndarray,
+        *,
+        X_cand_emb: np.ndarray | None = None,
+        X_obs_cls_emb: np.ndarray | None = None,
+        r_obs_cls: np.ndarray | None = None,
+        gamma_x: float | None = None,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
         r = np.asarray(r, dtype=float)
         if r.ndim != 2:
             raise ValueError(
@@ -613,10 +682,62 @@ class KernelSmoothedBayesianGain(PairScorer):
         K = r.shape[1]
         if K < 2:
             raise ValueError("IG requires at least 2 classes.")
-        return np.full_like(r, 1.0 / K, dtype=float)
+        if self.class_prior == "uniform":
+            return np.full_like(r, 1.0 / K, dtype=float)
+
+        if (
+            X_cand_emb is None
+            or X_obs_cls_emb is None
+            or r_obs_cls is None
+            or gamma_x is None
+        ):
+            raise ValueError(
+                "class_prior='kernel' requires candidate embeddings, "
+                "deduplicated labeled-sample embeddings, labeled-sample "
+                "posteriors, and gamma_x."
+            )
+
+        X_cand_emb = np.asarray(X_cand_emb, dtype=float)
+        X_obs_cls_emb = np.asarray(X_obs_cls_emb, dtype=float)
+        r_obs_cls = np.asarray(r_obs_cls, dtype=float)
+        if X_cand_emb.ndim != 2 or X_obs_cls_emb.ndim != 2:
+            raise ValueError("X_cand_emb and X_obs_cls_emb must be 2D.")
+        if r_obs_cls.ndim != 2 or r_obs_cls.shape[1] != K:
+            raise ValueError(
+                f"r_obs_cls must have shape (n_obs_samples, {K}), got {r_obs_cls.shape}."
+            )
+        if X_obs_cls_emb.shape[0] != r_obs_cls.shape[0]:
+            raise ValueError(
+                "X_obs_cls_emb and r_obs_cls must have the same number of rows."
+            )
+        if X_cand_emb.shape[0] != r.shape[0]:
+            raise ValueError(
+                "X_cand_emb must have the same number of rows as r."
+            )
+
+        K_cls = rbf_kernel(X_obs_cls_emb, X_cand_emb, gamma=float(gamma_x))
+        alpha0 = np.full(K, self.class_prior_strength / K, dtype=float)
+        alpha, _ = self.parzen_dirichlet_posterior(
+            K=K_cls,
+            Y=r_obs_cls,
+            gamma0=alpha0,
+            use_ess=self.use_ess_class_prior,
+            tau=self.tau_class_prior,
+        )
+
+        if self.sample_class_prior:
+            if rng is None:
+                raise ValueError(
+                    "sample_class_prior=True requires an RNG."
+                )
+            alpha_bt = np.clip(alpha, 1e-12, None)
+            X = rng.gamma(shape=alpha_bt, scale=1.0)
+            return X / np.maximum(X.sum(axis=1, keepdims=True), 1e-12)
+
+        return alpha / np.maximum(alpha.sum(axis=1, keepdims=True), 1e-12)
 
     # -------------------------
-    # IG computation
+    # Gain computation
     # -------------------------
     def _ig_channel_full_batch(
         self,
@@ -644,11 +765,9 @@ class KernelSmoothedBayesianGain(PairScorer):
                 sample=self.sample_label_dirichlet,
             )
             r_rep = np.repeat(r[:, None, :], T, axis=1)
-            ig_draws = information_gain(
+            ig_draws = self._pair_gain(
                 r_rep,
                 C=Cs,
-                normalize=True,
-                check_input=False,
             )
             return ig_draws.mean(axis=1)
 
@@ -663,12 +782,10 @@ class KernelSmoothedBayesianGain(PairScorer):
             g = np.repeat(g_mean[:, None, :], T, axis=1)
 
         r_rep = np.repeat(r[:, None, :], T, axis=1)
-        ig_draws = information_gain(
+        ig_draws = self._pair_gain(
             r_rep.reshape(-1, K),
             P_perf=thetas.reshape(-1, 1),
             P_annot=g.reshape(-1, 1, K),
-            normalize=True,
-            check_input=False,
         ).reshape(S, T)
         return ig_draws.mean(axis=1)
 
@@ -702,11 +819,9 @@ class KernelSmoothedBayesianGain(PairScorer):
                 sample=self.sample_label_dirichlet,
             )
             r_rep = np.repeat(r_red[:, None, :], T, axis=1)
-            ig_draws = information_gain(
+            ig_draws = self._pair_gain(
                 r_rep,
                 C=Cs,
-                normalize=True,
-                check_input=False,
             )
             return ig_draws.mean(axis=1)
 
@@ -724,12 +839,10 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         S, K_red = r_red.shape
         r_rep = np.repeat(r_red[:, None, :], T, axis=1)
-        ig_draws = information_gain(
+        ig_draws = self._pair_gain(
             r_rep.reshape(-1, K_red),
             P_perf=thetas.reshape(-1, 1),
             P_annot=g_red.reshape(-1, 1, K_red),
-            normalize=True,
-            check_input=False,
         ).reshape(S, T)
         return ig_draws.mean(axis=1)
 
@@ -758,11 +871,9 @@ class KernelSmoothedBayesianGain(PairScorer):
         ] * eye
 
         r_rep = np.repeat(r[:, None, :], T, axis=1)
-        ig_draws = information_gain(
+        ig_draws = self._pair_gain(
             r_rep,
             C=Cs,
-            normalize=True,
-            check_input=False,
         )
         return ig_draws.mean(axis=1)
 
@@ -795,11 +906,9 @@ class KernelSmoothedBayesianGain(PairScorer):
         Cs[..., idx, idx] = thetas
 
         r_rep = np.repeat(r[:, None, :], T, axis=1)
-        ig_draws = information_gain(
+        ig_draws = self._pair_gain(
             r_rep,
             C=Cs,
-            normalize=True,
-            check_input=False,
         )
         return ig_draws.mean(axis=1)
 
@@ -831,13 +940,29 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         T = Cs.shape[1]
         r_rep = np.repeat(r[:, None, :], T, axis=1)
-        ig_draws = information_gain(
+        ig_draws = self._pair_gain(
             r_rep,
             C=Cs,
+        )
+        return ig_draws.mean(axis=1)
+
+    def _pair_gain(
+        self,
+        P: np.ndarray,
+        *,
+        P_perf: np.ndarray | None = None,
+        P_annot: np.ndarray | None = None,
+        C: np.ndarray | None = None,
+    ) -> np.ndarray:
+        return expected_score_gain(
+            P,
+            P_perf=P_perf,
+            P_annot=P_annot,
+            C=C,
+            score=self.gain_type,
             normalize=True,
             check_input=False,
         )
-        return ig_draws.mean(axis=1)
 
     def _sample_theta_batch(
         self,

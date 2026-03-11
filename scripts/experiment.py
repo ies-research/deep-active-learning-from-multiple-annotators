@@ -238,9 +238,9 @@ def experiment(cfg):
         # Select candidate samples.
         is_cand = is_unlabeled(y_pool, missing_label=cfg.missing_label)
         is_cand = (
-            is_cand.any(axis=-1)
+            is_cand.all(axis=-1)
             if cfg.al.fully_unlabeled_cand
-            else is_cand.all(axis=-1)
+            else is_cand.any(axis=-1)
         )
         candidates = np.flatnonzero(is_cand)
 

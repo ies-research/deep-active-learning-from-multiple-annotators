@@ -1,2 +1,1 @@
-_target_: skactiveml.pool.UncertaintySampling
-method: "margin_sampling"
+_target_: src.scorer.UncertaintySampling

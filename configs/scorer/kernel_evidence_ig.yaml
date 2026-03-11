@@ -1,0 +1,17 @@
+_target_: src.scorer.KernelEvidenceInformationGain
+channel_variant: "channel"
+accuracy_mean: 0.9
+accuracy_strength: 1
+class_prior_strength: 1
+channel_label_dirichlet_strength: 1
+gamma_x: "median"
+gamma_x_scope: "global"
+use_ess_class_prior: true
+tau_class_prior: 1.0
+use_ess_beta: true
+tau_beta: 1.0
+use_ess_label_dirichlet: true
+tau_label_dirichlet: 1.0
+n_theta_samples: 1
+sample_class_prior: false
+sample_label_dirichlet: false
