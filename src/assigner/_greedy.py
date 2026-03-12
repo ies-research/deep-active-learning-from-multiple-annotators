@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.utils import check_random_state
 
 from ._base import PairAssigner
+from ._constraints import coerce_annotator_vector
 
 
 class _CosineCallSchedule:
@@ -188,6 +189,9 @@ class GreedyPairAssigner(PairAssigner):
 
             rng = self.random_state
             sel = []
+            remaining = self._coerce_annotator_remaining(
+                annotator_indices, kwargs.get("annotator_remaining_counts")
+            )
 
             # Per-batch counts (coverage/caps)
             c_s = np.zeros(S, dtype=int)
@@ -201,6 +205,8 @@ class GreedyPairAssigner(PairAssigner):
                     feasible &= c_s[:, None] < self.max_per_sample
                 if self.max_per_annotator is not None:
                     feasible &= c_a[None, :] < self.max_per_annotator
+                if remaining is not None:
+                    feasible &= c_a[None, :] < remaining[None, :]
 
                 if not feasible.any():
                     break
@@ -256,6 +262,16 @@ class GreedyPairAssigner(PairAssigner):
         finally:
             self._eps_sched.step()
             self._temp_sched.step()
+
+    @staticmethod
+    def _coerce_annotator_remaining(
+        annotator_indices, annotator_remaining_counts
+    ):
+        return coerce_annotator_vector(
+            annotator_indices,
+            annotator_remaining_counts,
+            name="annotator_remaining_counts",
+        )
 
     def _sample_uniform_or_topm(self, score, feasible, rng):
         feas_idx = np.flatnonzero(feasible.ravel())

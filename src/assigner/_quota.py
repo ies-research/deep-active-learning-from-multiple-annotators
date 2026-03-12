@@ -1,6 +1,7 @@
 import numpy as np
 
 from ._base import PairAssigner
+from ._constraints import coerce_annotator_vector
 
 
 class QuotaPairAssigner(PairAssigner):
@@ -39,6 +40,7 @@ class QuotaPairAssigner(PairAssigner):
         utilities,
         budget,
         annotator_label_counts=None,
+        annotator_remaining_counts=None,
     ):
         sample_indices = np.asarray(sample_indices, dtype=int)
         annotator_indices = np.asarray(annotator_indices, dtype=int)
@@ -53,6 +55,9 @@ class QuotaPairAssigner(PairAssigner):
         hist = self._coerce_annotator_counts(
             annotator_indices, annotator_label_counts
         )
+        remaining = self._coerce_annotator_remaining(
+            annotator_indices, annotator_remaining_counts
+        )
 
         batch_a = np.zeros(A, dtype=int)  # labels per annotator in this batch
         batch_s = np.zeros(S, dtype=int)  # labels per sample in this batch
@@ -61,6 +66,8 @@ class QuotaPairAssigner(PairAssigner):
 
         for _ in range(budget):
             feasible = ~np.isnan(U)
+            if remaining is not None:
+                feasible &= batch_a[None, :] < remaining[None, :]
             if not feasible.any():
                 break
 
@@ -96,32 +103,25 @@ class QuotaPairAssigner(PairAssigner):
 
     @staticmethod
     def _coerce_annotator_counts(annotator_indices, annotator_label_counts):
-        A = len(annotator_indices)
-        if annotator_label_counts is None:
+        out = coerce_annotator_vector(
+            annotator_indices,
+            annotator_label_counts,
+            name="annotator_label_counts",
+        )
+        if out is None:
+            A = len(annotator_indices)
             return np.zeros(A, dtype=int)
+        return out
 
-        # Case 1: dict mapping global annotator id -> count
-        if isinstance(annotator_label_counts, dict):
-            out = np.zeros(A, dtype=int)
-            for j, a_glob in enumerate(annotator_indices):
-                out[j] = int(annotator_label_counts.get(int(a_glob), 0))
-            if (out < 0).any():
-                raise ValueError(
-                    "Annotator label counts must be non-negative."
-                )
-            return out
-
-        # Case 2: array-like aligned with annotator_indices
-        arr = np.asarray(annotator_label_counts)
-        if arr.shape != (A,):
-            raise ValueError(
-                f"`annotator_label_counts` must be dict or array of shape "
-                f"({A},), got {arr.shape}."
-            )
-        arr = arr.astype(int, copy=False)
-        if (arr < 0).any():
-            raise ValueError("Annotator label counts must be non-negative.")
-        return arr
+    @staticmethod
+    def _coerce_annotator_remaining(
+        annotator_indices, annotator_remaining_counts
+    ):
+        return coerce_annotator_vector(
+            annotator_indices,
+            annotator_remaining_counts,
+            name="annotator_remaining_counts",
+        )
 
     @staticmethod
     def _pick_max_utility_pair(U, cand_cols):

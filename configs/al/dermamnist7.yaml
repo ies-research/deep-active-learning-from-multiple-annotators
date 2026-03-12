@@ -1,5 +1,8 @@
 n_cycles: 25
 init_pair_budget: 160
 actual_pair_budget: 160
+worker_capacity:
+  mode: none
+  multiplier: 1.0
 max_candidate_samples: 5000
 fully_unlabeled_cand: False

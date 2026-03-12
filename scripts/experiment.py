@@ -19,6 +19,37 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _resolve_annotator_total_capacities(al_cfg, n_annotators):
+    worker_capacity_cfg = getattr(al_cfg, "worker_capacity", None)
+    if worker_capacity_cfg is None:
+        return None
+
+    mode = str(getattr(worker_capacity_cfg, "mode", "none")).lower()
+    if mode == "none":
+        return None
+
+    if mode != "relative_equal_share":
+        raise ValueError(
+            "worker_capacity.mode must be one of "
+            "{'none', 'relative_equal_share'}."
+        )
+
+    multiplier = float(getattr(worker_capacity_cfg, "multiplier", 1.0))
+    if multiplier <= 0:
+        raise ValueError("worker_capacity.multiplier must be > 0.")
+
+    total_pair_budget = int(al_cfg.init_pair_budget) + max(
+        int(al_cfg.n_cycles) - 1, 0
+    ) * int(al_cfg.actual_pair_budget)
+    equal_share = (
+        float(total_pair_budget) / float(n_annotators)
+        if n_annotators > 0
+        else 0.0
+    )
+    cap = int(np.ceil(multiplier * equal_share))
+    return np.full(n_annotators, cap, dtype=np.int64)
+
+
 @hydra.main(
     config_path="../configs", config_name="experiment", version_base=None
 )
@@ -204,6 +235,10 @@ def experiment(cfg):
     # Initialize data pool.
     X_pool = X_train
     y_pool = np.full_like(z_train, fill_value=cfg.missing_label)
+    annotator_total_caps = _resolve_annotator_total_capacities(
+        cfg.al,
+        n_annotators=y_pool.shape[1],
+    )
 
     # Setup logging helpers. --------------------------------------------------
     steps = []
@@ -234,6 +269,18 @@ def experiment(cfg):
             is_unlabeled(y_pool, missing_label=cfg.missing_label),
             is_labeled(z_train, missing_label=cfg.missing_label),
         )
+        annotator_label_counts = np.sum(
+            is_labeled(y_pool, missing_label=cfg.missing_label), axis=0
+        ).astype(int, copy=False)
+        annotator_remaining_counts = np.sum(
+            available_mask, axis=0
+        ).astype(int, copy=False)
+        if annotator_total_caps is not None:
+            annotator_remaining_counts = np.minimum(
+                annotator_remaining_counts,
+                np.maximum(annotator_total_caps - annotator_label_counts, 0),
+            )
+        annotator_indices = np.flatnonzero(annotator_remaining_counts > 0)
 
         # Select candidate samples.
         is_cand = is_unlabeled(y_pool, missing_label=cfg.missing_label)
@@ -259,14 +306,20 @@ def experiment(cfg):
         )
 
         # Compute utilities for selected samples. -----------------------------
-        utilities = call_func(
-            f_callable=current_scorer,
-            X=X_pool,
-            y=y_pool,
-            sample_indices=sample_indices,
-            clf=clf,
-            available_mask=available_mask[sample_indices],
-        )
+        if len(sample_indices) == 0 or len(annotator_indices) == 0:
+            utilities = np.empty(
+                (len(sample_indices), len(annotator_indices)), dtype=float
+            )
+        else:
+            utilities = call_func(
+                f_callable=current_scorer,
+                X=X_pool,
+                y=y_pool,
+                sample_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                clf=clf,
+                available_mask=available_mask[np.ix_(sample_indices, annotator_indices)],
+            )
 
         # Assign annotators to samples given utilities. -----------------------
         remaining_budget = cfg.al.n_cycles * cfg.al.actual_pair_budget - cycle_idx * cfg.al.actual_pair_budget
@@ -274,7 +327,10 @@ def experiment(cfg):
             f_callable=current_assigner,
             utilities=utilities,
             sample_indices=sample_indices,
+            annotator_indices=annotator_indices,
             budget=current_pair_budget,
+            annotator_label_counts=annotator_label_counts,
+            annotator_remaining_counts=annotator_remaining_counts,
             remaining_budget=remaining_budget,
             ignore_var_keyword=True,
         )

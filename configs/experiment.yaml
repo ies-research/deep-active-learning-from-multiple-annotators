@@ -1,12 +1,12 @@
 defaults:
-  - al: dermamnist7
+  - al: food101
   - classifier: annot_mix
   - paths: default
-  - dataset: dermamnist7
+  - dataset: food101
   - embedder@classification_embedder: dinov2
   - embedder@simulation_embedder: clip
   - pipeline: default
-  - simulation: dermamnist7
+  - simulation: food101
   - module: mlp
   - training: default
   - scheduler: step_ratio_1
