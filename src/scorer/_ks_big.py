@@ -54,11 +54,11 @@ class KernelSmoothedBayesianGain(PairScorer):
         s(x,a) = sum_i w_i(x,a) * m_i
         f(x,a) = sum_i w_i(x,a) * (1 - m_i)
         alpha = alpha0 + s,  beta = beta0 + f
-      (by default ESS-scaled via `use_ess_beta=True`)
+      (ESS-scaled when `use_ess_beta=True`)
 
     - Dirichlet label model (kernel-weighted label counts)
         gamma_k(x,a) = gamma0_k + sum_i w_i(x,a) * 1[y_i = k]
-      (by default ESS-scaled via `use_ess_label_dirichlet=True`)
+      (ESS-scaled when `use_ess_label_dirichlet=True`)
 
     where the pair weight factorizes as:
         w_i(x,a) = k_x(x_i, x) * k_a(a_i, a)
@@ -73,14 +73,10 @@ class KernelSmoothedBayesianGain(PairScorer):
 
     Parameters
     ----------
-    accuracy_mean : float, default=0.95
-        Prior mean accuracy. Used as the Beta prior mean for variants with 
-        scalar/diagonal accuracies and as the diagonal prior mean of each
-        Dirichlet confusion row for `channel_variant="full_confusion"`.
-    accuracy_mean_mode : {"fixed", "global_observed", "per_annotator_observed"}, \
+    accuracy_mean : float or {"global_observed", "per_annotator_observed"}, \
             default="global_observed"
-        Strategy used to determine the prior mean accuracy:
-        - "fixed": use configured `accuracy_mean`.
+        Accuracy-prior specification. A float uses a fixed prior mean. The
+        observed modes infer the prior mean from the average soft correctness:
         - "global_observed": use the average soft correctness across all
           observed annotations.
         - "per_annotator_observed": use the average soft correctness over all
@@ -133,19 +129,19 @@ class KernelSmoothedBayesianGain(PairScorer):
     sample_class_prior : bool, default=False
         If True and `class_prior="kernel"`, sample the class prior from the
         kernelized Dirichlet instead of using its posterior mean.
-    use_ess_beta : bool, default=True
+    use_ess_beta : bool, default=False
         If True, map the kernel-weighted correctness evidence to a Beta 
         posterior using ESS-based concentration instead of raw weighted counts.
     tau_beta : float, default=1.0
         Discount factor for ESS-based Beta concentration
         (only used if `use_ess_beta=True`).
-    use_ess_label_dirichlet : bool, default=True
+    use_ess_label_dirichlet : bool, default=False
         If True, map kernel-weighted label evidence to a Dirichlet posterior
         using ESS-based concentration instead of raw weighted counts.
     tau_label_dirichlet : float, default=1.0
         Discount factor for ESS-based Dirichlet concentration
         (only used if `use_ess_label_dirichlet=True`).
-    top_m : int or None, default=2
+    top_m : int or None, default=None
         If not None, approximate entropy gain in top-M + "other" reduced label
         space. Currently supported only for `gain_type="entropy"` with
         `channel_variant="channel"` together with
@@ -173,8 +169,7 @@ class KernelSmoothedBayesianGain(PairScorer):
     def __init__(
         self,
         *,
-        accuracy_mean: float = 0.95,
-        accuracy_mean_mode: str = "global_observed",
+        accuracy_mean: float | str = "global_observed",
         accuracy_strength: float = 10.0,
         gamma_x="median",
         gamma_x_scope: str = "global",
@@ -192,14 +187,18 @@ class KernelSmoothedBayesianGain(PairScorer):
         tau_beta: float = 1.0,
         use_ess_label_dirichlet: bool = False,
         tau_label_dirichlet: float = 1.0,
-        top_m: int | None = 2,
+        top_m: int | None = None,
         n_theta_samples: int = 1,
         sample_label_dirichlet: bool = False,
         channel_wrong_label_mode: str = "normalize",
         random_state=None,
     ):
-        self.accuracy_mean = float(accuracy_mean)
-        self.accuracy_mean_mode = str(accuracy_mean_mode)
+        if isinstance(accuracy_mean, str):
+            self.accuracy_mean = str(accuracy_mean)
+            self._accuracy_mean_mode = self.accuracy_mean
+        else:
+            self.accuracy_mean = float(accuracy_mean)
+            self._accuracy_mean_mode = "fixed"
         self.accuracy_strength = float(accuracy_strength)
         self.gamma_x = gamma_x
         self.gamma_x_scope = str(gamma_x_scope)
@@ -219,22 +218,22 @@ class KernelSmoothedBayesianGain(PairScorer):
         self.tau_beta = float(tau_beta)
         self.use_ess_label_dirichlet = bool(use_ess_label_dirichlet)
         self.tau_label_dirichlet = float(tau_label_dirichlet)
-        self.top_m = top_m
+        self.top_m = None if top_m is None else int(top_m)
         self.n_theta_samples = int(n_theta_samples)
         self.sample_label_dirichlet = bool(sample_label_dirichlet)
         self.channel_wrong_label_mode = str(channel_wrong_label_mode)
         self.random_state = check_random_state(random_state)
 
-        if not (0.0 < self.accuracy_mean < 1.0):
-            raise ValueError("accuracy_mean must be in (0, 1)")
-        if self.accuracy_mean_mode not in {
-            "fixed",
+        if self._accuracy_mean_mode == "fixed":
+            if not (0.0 < self.accuracy_mean < 1.0):
+                raise ValueError("accuracy_mean must be in (0, 1)")
+        elif self._accuracy_mean_mode not in {
             "global_observed",
             "per_annotator_observed",
         }:
             raise ValueError(
-                "accuracy_mean_mode must be one of "
-                "{'fixed', 'global_observed', 'per_annotator_observed'}"
+                "accuracy_mean must be a float in (0, 1) or one of "
+                "{'global_observed', 'per_annotator_observed'}"
             )
         if self.accuracy_strength <= 0:
             raise ValueError("accuracy_strength must be > 0")
@@ -252,6 +251,17 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "channel_wrong_label_mode must be one of "
                 "{'normalize', 'sample_dirichlet_wrong'}"
             )
+        if self.channel_variant not in {
+            "channel",
+            "scalar_uniform_confusion",
+            "diag_uniform_confusion",
+            "full_confusion",
+        }:
+            raise ValueError(
+                "channel_variant must be one of "
+                "{'channel', 'scalar_uniform_confusion', "
+                "'diag_uniform_confusion', 'full_confusion'}"
+            )
         if self.class_prior not in {"classifier", "uniform", "kernel"}:
             raise ValueError(
                 "class_prior must be one of {'classifier', 'uniform', 'kernel'}"
@@ -264,10 +274,96 @@ class KernelSmoothedBayesianGain(PairScorer):
             raise ValueError("class_prior_strength must be > 0")
         if self.tau_class_prior <= 0:
             raise ValueError("tau_class_prior must be > 0")
+        if self.tau_beta <= 0:
+            raise ValueError("tau_beta must be > 0")
+        if self.tau_label_dirichlet <= 0:
+            raise ValueError("tau_label_dirichlet must be > 0")
         if self.sample_class_prior and self.class_prior != "kernel":
             raise ValueError(
                 "sample_class_prior=True requires class_prior='kernel'"
             )
+        if self.top_m is not None:
+            if self.top_m <= 0:
+                raise ValueError("top_m must be positive or None")
+            if self.channel_variant != "channel":
+                raise ValueError(
+                    "top_m is only supported with channel_variant='channel'"
+                )
+            if self.gain_type != "entropy":
+                raise ValueError(
+                    "top_m is only supported with gain_type='entropy'"
+                )
+            if self.class_prior not in {"classifier", "kernel"}:
+                raise ValueError(
+                    "top_m is only supported with class_prior in "
+                    "{'classifier', 'kernel'}"
+                )
+
+        uses_beta = self.channel_variant in {
+            "channel",
+            "scalar_uniform_confusion",
+            "diag_uniform_confusion",
+        }
+        if not uses_beta:
+            if self.use_ess_beta:
+                raise ValueError(
+                    "use_ess_beta is only supported for channel variants "
+                    "with Beta accuracy posteriors"
+                )
+            if self.tau_beta != 1.0:
+                raise ValueError(
+                    "tau_beta is only used for channel variants with Beta "
+                    "accuracy posteriors"
+                )
+
+        uses_label_dirichlet = self.channel_variant in {
+            "channel",
+            "full_confusion",
+        }
+        if not uses_label_dirichlet:
+            if self.use_ess_label_dirichlet:
+                raise ValueError(
+                    "use_ess_label_dirichlet is only supported for "
+                    "channel and full_confusion variants"
+                )
+            if self.tau_label_dirichlet != 1.0:
+                raise ValueError(
+                    "tau_label_dirichlet is only used for channel and "
+                    "full_confusion variants"
+                )
+            if self.sample_label_dirichlet:
+                raise ValueError(
+                    "sample_label_dirichlet is only supported for "
+                    "channel and full_confusion variants"
+                )
+
+        if self.channel_variant != "channel":
+            if self.channel_label_dirichlet_strength != 1.0:
+                raise ValueError(
+                    "channel_label_dirichlet_strength is only used for "
+                    "channel_variant='channel'"
+                )
+            if self.channel_wrong_label_mode != "normalize":
+                raise ValueError(
+                    "channel_wrong_label_mode is only used for "
+                    "channel_variant='channel'"
+                )
+
+        if self.class_prior != "kernel":
+            if self.class_prior_strength != 1.0:
+                raise ValueError(
+                    "class_prior_strength is only used when "
+                    "class_prior='kernel'"
+                )
+            if self.use_ess_class_prior:
+                raise ValueError(
+                    "use_ess_class_prior is only supported when "
+                    "class_prior='kernel'"
+                )
+            if self.tau_class_prior != 1.0:
+                raise ValueError(
+                    "tau_class_prior is only used when class_prior='kernel'"
+                )
 
     def _compute(
         self,
@@ -300,20 +396,16 @@ class KernelSmoothedBayesianGain(PairScorer):
                 f"Unknown channel_variant={self.channel_variant!r}. "
                 f"Expected one of {sorted(valid_variants)}."
             )
-        if (
-            self.class_prior == "uniform"
-            and self.channel_variant == "channel"
-            and self.top_m is not None
-        ):
+        if self.top_m is not None and self.channel_variant != "channel":
             raise ValueError(
-                "top_m is only supported with class_prior='classifier' "
-                "for channel_variant='channel'."
+                "top_m is only supported with channel_variant='channel'."
             )
-        if (
-            self.gain_type != "entropy"
-            and self.channel_variant == "channel"
-            and self.top_m is not None
-        ):
+        if self.top_m is not None and self.class_prior == "uniform":
+            raise ValueError(
+                "top_m is only supported with class_prior in "
+                "{'classifier', 'kernel'} for channel_variant='channel'."
+            )
+        if self.top_m is not None and self.gain_type != "entropy":
             raise ValueError(
                 "top_m is only supported with gain_type='entropy' "
                 "for channel_variant='channel'."
@@ -434,7 +526,7 @@ class KernelSmoothedBayesianGain(PairScorer):
             X_obs_emb, X_cand_emb, gamma=gamma_x_global
         )
 
-        if self.accuracy_mean_mode == "fixed":
+        if self._accuracy_mean_mode == "fixed":
             prior_acc_global = float(self.accuracy_mean)
         else:
             prior_acc_global = global_obs_acc_mean
@@ -457,7 +549,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         )
 
         for j_a, a in enumerate(annotator_indices):
-            if self.accuracy_mean_mode == "per_annotator_observed":
+            if self._accuracy_mean_mode == "per_annotator_observed":
                 if a < 0 or a >= n_annotators_total:
                     raise ValueError(
                         f"Annotator index {a} out of bounds for y with "
@@ -536,7 +628,7 @@ class KernelSmoothedBayesianGain(PairScorer):
                     and (self.top_m is None or self.top_m >= K)
                 ):
                     U_col = self._ig_channel_full_batch(
-                        r=r_cand,
+                        r=r_cand_prior,
                         alpha=alpha,
                         beta=beta,
                         gamma=gamma_cand,
@@ -927,11 +1019,11 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "delta must have shape (n_samples, K, K) in batch full_confusion."
             )
 
-        if self.n_theta_samples <= 0 or not self.sample_label_dirichlet:
+        if not self.sample_label_dirichlet:
             C_mean = delta / np.maximum(delta.sum(axis=2, keepdims=True), 1e-12)
             Cs = C_mean[:, None, :, :]
         else:
-            T = self.n_theta_samples
+            T = max(self.n_theta_samples, 1)
             alpha = np.clip(delta[:, None, :, :], 1e-12, None)
             if T != 1:
                 alpha = np.repeat(alpha, T, axis=1)

@@ -1,0 +1,13 @@
+{
+  "name": "rand",
+  "description": "Random pair scorer with greedy sample-aware assignment",
+  "tags": {
+    "method_family": "rand",
+    "scorer_family": "random",
+    "assigner_family": "greedy_sample"
+  },
+  "overrides": [
+    "scorer@scorer.actual=random",
+    "assigner@assigner.actual=greedy_sample"
+  ]
+}

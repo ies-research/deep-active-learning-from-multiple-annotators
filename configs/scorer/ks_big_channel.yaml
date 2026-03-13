@@ -1,0 +1,35 @@
+_target_: src.scorer.KernelSmoothedBayesianGain
+
+# Accuracy prior
+accuracy_mean: "per_annotator_observed"
+accuracy_strength: 1.0 # to be investigated
+
+# Sample / annotator kernels
+gamma_x: "median" # to be investigated
+gamma_x_scope: "per_annotator" # to be investigated
+gamma_a: "median"
+use_annotator_embeddings: false
+
+# Channel model
+channel_variant: "channel" 
+channel_label_dirichlet_strength: 1.0 # to be investigated
+channel_wrong_label_mode: "sample_dirichlet_wrong" # to be investigated
+
+# Latent class prior
+class_prior: "kernel" # to be investigated
+class_prior_strength: 1.0 # to be investigated
+use_ess_class_prior: true
+tau_class_prior: 1.0
+sample_class_prior: true # to be investigated
+
+# Posterior concentration / sampling
+use_ess_beta: true
+tau_beta: 1.0
+use_ess_label_dirichlet: true
+tau_label_dirichlet: 1.0 # to be investigated
+n_theta_samples: 0
+sample_label_dirichlet: true # to be investigated
+
+# Approximation / utility
+top_m: null
+gain_type: margin # to be investigated

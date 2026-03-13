@@ -1,0 +1,13 @@
+{
+  "name": "ig_gain",
+  "description": "Information gain pair scorer with greedy sample-aware assignment",
+  "tags": {
+    "method_family": "ig_gain",
+    "scorer_family": "ig_gain",
+    "assigner_family": "greedy_sample"
+  },
+  "overrides": [
+    "scorer@scorer.actual=ig_gain",
+    "assigner@assigner.actual=greedy_sample"
+  ]
+}

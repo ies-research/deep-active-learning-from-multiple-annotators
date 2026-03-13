@@ -1,0 +1,53 @@
+{
+  "name": "pairing_dev",
+  "description": "DTD47 scorer-assigner development sweep",
+  "common_overrides": [
+    "dataset=dtd47",
+    "simulation=dtd47",
+    "al=dtd47",
+    "classifier=annot_mix",
+    "sample@sample.actual=margin",
+    "experiment_name=pairing_dev"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "scorer",
+      "type": "choices",
+      "values": {
+        "rand": {
+          "overrides": ["scorer@scorer.actual=random"]
+        },
+        "ig_gain": {
+          "overrides": ["scorer@scorer.actual=ig_gain"]
+        },
+        "ks_big": {
+          "overrides": ["scorer@scorer.actual=ks_big"]
+        }
+      }
+    },
+    {
+      "name": "assigner",
+      "type": "choices",
+      "values": {
+        "greedy_sample": {
+          "overrides": ["assigner@assigner.actual=greedy_sample"]
+        },
+        "quota_sample": {
+          "overrides": ["assigner@assigner.actual=quota_sample"]
+        },
+        "epsilon_greedy_sample": {
+          "overrides": ["assigner@assigner.actual=epsilon_greedy_sample"]
+        },
+        "softmax_greedy_sample": {
+          "overrides": ["assigner@assigner.actual=softmax_greedy_sample"]
+        }
+      }
+    }
+  ]
+}

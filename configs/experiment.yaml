@@ -1,19 +1,19 @@
 defaults:
-  - al: food101
+  - al: dermamnist7
   - classifier: annot_mix
   - paths: default
-  - dataset: food101
-  - embedder@classification_embedder: dinov2
-  - embedder@simulation_embedder: clip
+  - dataset: dermamnist7
+  - embedder@classification_embedder: clip
+  - embedder@simulation_embedder: dinov2
   - pipeline: default
-  - simulation: food101
+  - simulation: dermamnist7
   - module: mlp
   - training: default
   - scheduler: step_ratio_1
   - sample@sample.init: typi_clust
   - sample@sample.actual: falcun
   - scorer@scorer.init: random
-  - scorer@scorer.actual: ks_big
+  - scorer@scorer.actual: ks_big_channel
   - assigner@assigner.init: quota_sample
   - assigner@assigner.actual: greedy_sample
   - override hydra/hydra_logging: disabled
@@ -21,7 +21,7 @@ defaults:
   - _self_
 experiment_name: "test"
 results_path: ${paths.results_path}
-device: "cuda"
+device: "cpu"
 missing_label: -1
 exit_after_simulation: False
 seed: 0

@@ -1,0 +1,52 @@
+{
+  "name": "sample_strategy_case",
+  "description": "Case study over sample-selection strategies",
+  "common_overrides": [
+    "classifier=annot_mix",
+    "experiment_name=sample_strategy_case"
+  ],
+  "axes": [
+    {
+      "name": "dataset",
+      "type": "template",
+      "values": ["banking77", "skits2i14"],
+      "overrides": [
+        "dataset={value}",
+        "simulation={value}",
+        "al={value}"
+      ]
+    },
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "method",
+      "type": "registry",
+      "values": ["ig_gain", "ks_big"]
+    },
+    {
+      "name": "sampler",
+      "type": "choices",
+      "values": {
+        "random": {
+          "overrides": ["sample@sample.actual=random"]
+        },
+        "margin": {
+          "overrides": ["sample@sample.actual=margin"]
+        },
+        "badge": {
+          "overrides": ["sample@sample.actual=badge"]
+        },
+        "falcun": {
+          "overrides": ["sample@sample.actual=falcun"]
+        },
+        "typi_clust": {
+          "overrides": ["sample@sample.actual=typi_clust"]
+        }
+      }
+    }
+  ]
+}

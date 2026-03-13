@@ -1,0 +1,13 @@
+{
+  "name": "ks_big",
+  "description": "Kernel-smoothed Bayesian gain with greedy sample-aware assignment",
+  "tags": {
+    "method_family": "ks_big",
+    "scorer_family": "ks_big",
+    "assigner_family": "greedy_sample"
+  },
+  "overrides": [
+    "scorer@scorer.actual=ks_big",
+    "assigner@assigner.actual=greedy_sample"
+  ]
+}

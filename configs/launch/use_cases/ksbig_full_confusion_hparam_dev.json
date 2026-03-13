@@ -1,0 +1,116 @@
+{
+  "name": "ksbig_full_confusion_hparam_dev",
+  "description": "DTD47 KS-BIG full-confusion hyperparameter sweep",
+  "common_overrides": [
+    "dataset=dtd47",
+    "simulation=dtd47",
+    "al=dtd47",
+    "classifier=annot_mix",
+    "sample@sample.actual=margin",
+    "assigner@assigner.actual=greedy_sample",
+    "scorer@scorer.actual=ks_big_full_confusion",
+    "experiment_name=ksbig_full_confusion_hparam_dev"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "gain_type",
+      "type": "choices",
+      "values": {
+        "margin": {
+          "overrides": ["scorer.actual.gain_type=margin"]
+        },
+        "entropy": {
+          "overrides": ["scorer.actual.gain_type=entropy"]
+        },
+        "brier": {
+          "overrides": ["scorer.actual.gain_type=brier"]
+        }
+      }
+    },
+    {
+      "name": "accuracy_strength",
+      "type": "template",
+      "values": [1.0, 2.0],
+      "overrides": ["scorer.actual.accuracy_strength={value}"]
+    },
+    {
+      "name": "gamma_x",
+      "type": "template",
+      "values": ["median", "mean"],
+      "overrides": ["scorer.actual.gamma_x={value}"]
+    },
+    {
+      "name": "gamma_x_scope",
+      "type": "template",
+      "values": ["global", "per_annotator"],
+      "overrides": ["scorer.actual.gamma_x_scope={value}"]
+    },
+    {
+      "name": "sample_label_dirichlet",
+      "type": "choices",
+      "values": {
+        "posterior_mean": {
+          "overrides": ["scorer.actual.sample_label_dirichlet=false"]
+        },
+        "sampled_rows": {
+          "overrides": ["scorer.actual.sample_label_dirichlet=true"]
+        }
+      }
+    },
+    {
+      "name": "class_prior_mode",
+      "type": "choices",
+      "values": {
+        "uniform": {
+          "overrides": ["scorer.actual.class_prior=uniform"]
+        },
+        "classifier": {
+          "overrides": ["scorer.actual.class_prior=classifier"]
+        },
+        "kernel_mean": {
+          "overrides": [
+            "scorer.actual.class_prior=kernel",
+            "scorer.actual.use_ess_class_prior=true",
+            "scorer.actual.sample_class_prior=false"
+          ]
+        },
+        "kernel_sample": {
+          "overrides": [
+            "scorer.actual.class_prior=kernel",
+            "scorer.actual.use_ess_class_prior=true",
+            "scorer.actual.sample_class_prior=true"
+          ]
+        }
+      }
+    },
+    {
+      "name": "class_prior_strength",
+      "type": "choices",
+      "values": {
+        "inactive": {
+          "when": {
+            "class_prior_mode": ["uniform", "classifier"]
+          }
+        },
+        "1.0": {
+          "when": {
+            "class_prior_mode": ["kernel_mean", "kernel_sample"]
+          },
+          "overrides": ["scorer.actual.class_prior_strength=1.0"]
+        },
+        "2.0": {
+          "when": {
+            "class_prior_mode": ["kernel_mean", "kernel_sample"]
+          },
+          "overrides": ["scorer.actual.class_prior_strength=2.0"]
+        }
+      }
+    }
+  ]
+}

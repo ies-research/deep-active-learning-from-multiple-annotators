@@ -1,0 +1,71 @@
+{
+  "name": "worker_quota_case",
+  "description": "Case study over persistent worker-cap regimes",
+  "common_overrides": [
+    "classifier=annot_mix",
+    "sample@sample.actual=margin",
+    "experiment_name=worker_quota_case"
+  ],
+  "axes": [
+    {
+      "name": "dataset",
+      "type": "template",
+      "values": ["banking77", "skits2i14"],
+      "overrides": [
+        "dataset={value}",
+        "simulation={value}",
+        "al={value}"
+      ]
+    },
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "method",
+      "type": "registry",
+      "values": ["ig_gain", "ks_big"]
+    },
+    {
+      "name": "quota_regime",
+      "type": "choices",
+      "values": {
+        "none": {
+          "overrides": [
+            "al.worker_capacity.mode=none",
+            "assigner@assigner.actual=greedy_sample"
+          ]
+        },
+        "equal_share": {
+          "overrides": [
+            "al.worker_capacity.mode=relative_equal_share",
+            "al.worker_capacity.multiplier=1.0",
+            "assigner@assigner.actual=greedy_sample"
+          ]
+        },
+        "mild": {
+          "overrides": [
+            "al.worker_capacity.mode=relative_equal_share",
+            "al.worker_capacity.multiplier=1.25",
+            "assigner@assigner.actual=greedy_sample"
+          ]
+        },
+        "loose": {
+          "overrides": [
+            "al.worker_capacity.mode=relative_equal_share",
+            "al.worker_capacity.multiplier=2.0",
+            "assigner@assigner.actual=greedy_sample"
+          ]
+        },
+        "quota_sample": {
+          "overrides": [
+            "al.worker_capacity.mode=none",
+            "assigner@assigner.actual=quota_sample"
+          ]
+        }
+      }
+    }
+  ]
+}
