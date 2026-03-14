@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from scipy.stats import beta as beta_distribution
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.utils import check_random_state
 
@@ -101,6 +102,10 @@ class KernelSmoothedBayesianGain(PairScorer):
         If True, request and use global annotator embeddings (when provided by
         `clf`) to smooth across annotators. If False, always use exact
         annotator identity weighting.
+    annotator_lambda : float, default=0.0
+        Convex weight on an instance-independent sample kernel in the
+        annotator-side posterior updates. `0.0` keeps the local kernel only,
+        while `1.0` yields instance-independent worker estimates.
     channel_label_dirichlet_strength : float, default=1.0
         Symmetric Dirichlet prior concentration for the fallback label
         distribution `g` in `channel_variant="channel"` only.
@@ -119,6 +124,10 @@ class KernelSmoothedBayesianGain(PairScorer):
     class_prior_strength : float, default=1.0
         Symmetric Dirichlet prior concentration for the kernelized class prior.
         Used only when `class_prior="kernel"`.
+    class_prior_lambda : float, default=0.0
+        Convex weight on an instance-independent sample kernel in the
+        kernelized class prior. `0.0` keeps the local kernel only, while
+        `1.0` collapses the class prior to a global sample smoother.
     use_ess_class_prior : bool, default=False
         If True, map kernel-weighted class evidence to the class-prior
         Dirichlet posterior using ESS-based concentration instead of raw
@@ -150,6 +159,12 @@ class KernelSmoothedBayesianGain(PairScorer):
         Number of Monte Carlo draws for latent channel parameters. For variants
         with Beta accuracies, this controls Beta draws. If <=0, posterior means
         are used (when applicable).
+    theta_ucb_quantile : float or None, default=None
+        Deterministic optimistic quantile for Beta-based accuracy parameters
+        when `n_theta_samples <= 0`. If provided, the point estimate becomes
+        the Beta posterior quantile `q` instead of the posterior mean. Used
+        only for `channel`, `scalar_uniform_confusion`, and
+        `diag_uniform_confusion`.
     sample_label_dirichlet : bool, default=False
         If True, sample Dirichlet-distributed label parameters
         (`g` in `channel`, confusion rows in `full_confusion`); otherwise use
@@ -175,11 +190,13 @@ class KernelSmoothedBayesianGain(PairScorer):
         gamma_x_scope: str = "global",
         gamma_a="median",
         use_annotator_embeddings: bool = True,
+        annotator_lambda: float = 0.0,
         channel_label_dirichlet_strength: float = 1.0,
         gain_type: str = "entropy",
         channel_variant: str = "channel",
         class_prior: str = "classifier",
         class_prior_strength: float = 1.0,
+        class_prior_lambda: float = 0.0,
         use_ess_class_prior: bool = False,
         tau_class_prior: float = 1.0,
         sample_class_prior: bool = False,
@@ -189,6 +206,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         tau_label_dirichlet: float = 1.0,
         top_m: int | None = None,
         n_theta_samples: int = 1,
+        theta_ucb_quantile: float | None = None,
         sample_label_dirichlet: bool = False,
         channel_wrong_label_mode: str = "normalize",
         random_state=None,
@@ -204,6 +222,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         self.gamma_x_scope = str(gamma_x_scope)
         self.gamma_a = gamma_a
         self.use_annotator_embeddings = bool(use_annotator_embeddings)
+        self.annotator_lambda = float(annotator_lambda)
         self.channel_label_dirichlet_strength = float(
             channel_label_dirichlet_strength
         )
@@ -211,6 +230,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         self.channel_variant = str(channel_variant)
         self.class_prior = str(class_prior)
         self.class_prior_strength = float(class_prior_strength)
+        self.class_prior_lambda = float(class_prior_lambda)
         self.use_ess_class_prior = bool(use_ess_class_prior)
         self.tau_class_prior = float(tau_class_prior)
         self.sample_class_prior = bool(sample_class_prior)
@@ -220,6 +240,11 @@ class KernelSmoothedBayesianGain(PairScorer):
         self.tau_label_dirichlet = float(tau_label_dirichlet)
         self.top_m = None if top_m is None else int(top_m)
         self.n_theta_samples = int(n_theta_samples)
+        self.theta_ucb_quantile = (
+            None
+            if theta_ucb_quantile is None
+            else float(theta_ucb_quantile)
+        )
         self.sample_label_dirichlet = bool(sample_label_dirichlet)
         self.channel_wrong_label_mode = str(channel_wrong_label_mode)
         self.random_state = check_random_state(random_state)
@@ -237,12 +262,20 @@ class KernelSmoothedBayesianGain(PairScorer):
             )
         if self.accuracy_strength <= 0:
             raise ValueError("accuracy_strength must be > 0")
+        if self.theta_ucb_quantile is not None and not (
+            0.0 < self.theta_ucb_quantile < 1.0
+        ):
+            raise ValueError("theta_ucb_quantile must be in (0, 1)")
         if self.channel_label_dirichlet_strength <= 0:
             raise ValueError("channel_label_dirichlet_strength must be > 0")
         if self.gamma_x_scope not in {"global", "per_annotator"}:
             raise ValueError(
                 "gamma_x_scope must be one of {'global', 'per_annotator'}"
             )
+        if not (0.0 <= self.annotator_lambda <= 1.0):
+            raise ValueError("annotator_lambda must be in [0, 1]")
+        if not (0.0 <= self.class_prior_lambda <= 1.0):
+            raise ValueError("class_prior_lambda must be in [0, 1]")
         if self.channel_wrong_label_mode not in {
             "normalize",
             "sample_dirichlet_wrong",
@@ -315,6 +348,19 @@ class KernelSmoothedBayesianGain(PairScorer):
                     "tau_beta is only used for channel variants with Beta "
                     "accuracy posteriors"
                 )
+            if self.theta_ucb_quantile is not None:
+                raise ValueError(
+                    "theta_ucb_quantile is only supported for channel "
+                    "variants with Beta accuracy posteriors"
+                )
+
+        if (
+            self.theta_ucb_quantile is not None
+            and self.n_theta_samples > 0
+        ):
+            raise ValueError(
+                "theta_ucb_quantile requires n_theta_samples <= 0"
+            )
 
         uses_label_dirichlet = self.channel_variant in {
             "channel",
@@ -363,6 +409,11 @@ class KernelSmoothedBayesianGain(PairScorer):
             if self.tau_class_prior != 1.0:
                 raise ValueError(
                     "tau_class_prior is only used when class_prior='kernel'"
+                )
+            if self.class_prior_lambda != 0.0:
+                raise ValueError(
+                    "class_prior_lambda is only used when "
+                    "class_prior='kernel'"
                 )
 
     def _compute(
@@ -521,8 +572,8 @@ class KernelSmoothedBayesianGain(PairScorer):
             rng=rng,
         )
 
-        # Sample-kernel weights from observed pairs to candidate samples.
-        Kx_obs_cand_global = rbf_kernel(
+        # Local sample-kernel weights from observed pairs to candidate samples.
+        Kx_obs_cand_local_global = rbf_kernel(
             X_obs_emb, X_cand_emb, gamma=gamma_x_global
         )
 
@@ -580,11 +631,16 @@ class KernelSmoothedBayesianGain(PairScorer):
                     )
                 else:
                     gamma_x_a = gamma_x_global
-                Kx_obs_cand = rbf_kernel(
+                Kx_obs_cand_local = rbf_kernel(
                     X_obs_emb, X_cand_emb, gamma=gamma_x_a
                 )
             else:
-                Kx_obs_cand = Kx_obs_cand_global
+                Kx_obs_cand_local = Kx_obs_cand_local_global
+
+            Kx_obs_cand = self._mix_with_global_sample_kernel(
+                Kx_obs_cand_local,
+                lam=self.annotator_lambda,
+            )
 
             if use_annotator_kernel:
                 Ka_obs = rbf_kernel(
@@ -807,7 +863,13 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "X_cand_emb must have the same number of rows as r."
             )
 
-        K_cls = rbf_kernel(X_obs_cls_emb, X_cand_emb, gamma=float(gamma_x))
+        K_cls_local = rbf_kernel(
+            X_obs_cls_emb, X_cand_emb, gamma=float(gamma_x)
+        )
+        K_cls = self._mix_with_global_sample_kernel(
+            K_cls_local,
+            lam=self.class_prior_lambda,
+        )
         alpha0 = np.full(K, self.class_prior_strength / K, dtype=float)
         alpha, _ = self.parzen_dirichlet_posterior(
             K=K_cls,
@@ -983,7 +1045,10 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         S, K = r.shape
         if self.n_theta_samples <= 0:
-            thetas = (alpha / np.maximum(alpha + beta, 1e-12))[:, None, :]
+            thetas = self._theta_ucb_point_estimate(
+                alpha=alpha,
+                beta=beta,
+            )[:, None, :]
         else:
             thetas = rng.beta(
                 alpha[:, None, :],
@@ -1066,12 +1131,35 @@ class KernelSmoothedBayesianGain(PairScorer):
         alpha = np.asarray(alpha, dtype=float)
         beta = np.asarray(beta, dtype=float)
         if self.n_theta_samples <= 0:
-            return (alpha / np.maximum(alpha + beta, 1e-12))[:, None]
+            return self._theta_ucb_point_estimate(
+                alpha=alpha,
+                beta=beta,
+            )[:, None]
         return rng.beta(
             alpha[:, None],
             beta[:, None],
             size=(alpha.shape[0], self.n_theta_samples),
         ).astype(float)
+
+    def _theta_ucb_point_estimate(
+        self,
+        *,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+    ) -> np.ndarray:
+        alpha = np.asarray(alpha, dtype=float)
+        beta = np.asarray(beta, dtype=float)
+        denom = np.maximum(alpha + beta, 1e-12)
+        mean = alpha / denom
+        if self.theta_ucb_quantile is None:
+            return mean
+
+        theta_q = beta_distribution.ppf(
+            self.theta_ucb_quantile,
+            np.clip(alpha, 1e-12, None),
+            np.clip(beta, 1e-12, None),
+        )
+        return np.clip(theta_q, 0.0, 1.0)
 
     @staticmethod
     def _reduce_topm_vectors_batch(
@@ -1176,6 +1264,25 @@ class KernelSmoothedBayesianGain(PairScorer):
     # -------------------------
     # Gamma resolution
     # -------------------------
+    @staticmethod
+    def _mix_with_global_sample_kernel(
+        K_local: np.ndarray,
+        *,
+        lam: float,
+    ) -> np.ndarray:
+        K_local = np.asarray(K_local, dtype=float)
+        if K_local.ndim != 2:
+            raise ValueError(
+                f"K_local must be 2D, got shape {K_local.shape}."
+            )
+        if not (0.0 <= lam <= 1.0):
+            raise ValueError("lam must be in [0, 1].")
+        if lam == 0.0:
+            return K_local
+        if lam == 1.0:
+            return np.ones_like(K_local, dtype=float)
+        return lam + (1.0 - lam) * K_local
+
     @staticmethod
     def _resolve_gamma_from_embeddings(E: np.ndarray, mode):
         E = np.asarray(E, dtype=float)
