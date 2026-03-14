@@ -29,8 +29,8 @@ use_ess_beta: true
 tau_beta: 1.0
 use_ess_label_dirichlet: true
 tau_label_dirichlet: 1.0 # to be investigated
-n_theta_samples: 10
-theta_ucb_quantile: null # use Beta posterior quantile when n_theta_samples <= 0
+n_mc_samples: 20
+theta_ucb_quantile: null # use Beta posterior quantile when n_mc_samples <= 0
 sample_label_dirichlet: true # to be investigated
 
 # Approximation / utility

@@ -13,7 +13,7 @@ defaults:
   - sample@sample.init: typi_clust
   - sample@sample.actual: falcun
   - scorer@scorer.init: random
-  - scorer@scorer.actual: ig_gain
+  - scorer@scorer.actual: ks_big_channel
   - assigner@assigner.init: quota_sample
   - assigner@assigner.actual: greedy_sample
   - override hydra/hydra_logging: disabled

@@ -25,8 +25,8 @@ sample_class_prior: false # to be investigated
 # Posterior concentration / sampling
 use_ess_beta: true
 tau_beta: 1.0
-n_theta_samples: 20
-theta_ucb_quantile: null # use Beta posterior quantile when n_theta_samples <= 0
+n_mc_samples: 20
+theta_ucb_quantile: null # use Beta posterior quantile when n_mc_samples <= 0
 
 # Utility
 gain_type: margin

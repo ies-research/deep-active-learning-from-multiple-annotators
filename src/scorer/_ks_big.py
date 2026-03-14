@@ -136,8 +136,9 @@ class KernelSmoothedBayesianGain(PairScorer):
         Discount factor for ESS-based class-prior Dirichlet concentration
         (only used if `use_ess_class_prior=True`).
     sample_class_prior : bool, default=False
-        If True and `class_prior="kernel"`, sample the class prior from the
-        kernelized Dirichlet instead of using its posterior mean.
+        If True and `class_prior="kernel"` together with
+        `n_mc_samples > 0`, sample the class prior from the kernelized
+        Dirichlet; otherwise use its posterior mean.
     use_ess_beta : bool, default=False
         If True, map the kernel-weighted correctness evidence to a Beta 
         posterior using ESS-based concentration instead of raw weighted counts.
@@ -155,20 +156,21 @@ class KernelSmoothedBayesianGain(PairScorer):
         space. Currently supported only for `gain_type="entropy"` with
         `channel_variant="channel"` together with
         `class_prior` in `{"classifier", "kernel"}`.
-    n_theta_samples : int, default=1
-        Number of Monte Carlo draws for latent channel parameters. For variants
-        with Beta accuracies, this controls Beta draws. If <=0, posterior means
-        are used (when applicable).
+    n_mc_samples : int, default=1
+        Shared number of Monte Carlo draws for all sampled latent variables:
+        Beta accuracies, Dirichlet label parameters, and the kernelized class
+        prior. If <=0, deterministic point estimates / posterior means are
+        used instead.
     theta_ucb_quantile : float or None, default=None
         Deterministic optimistic quantile for Beta-based accuracy parameters
-        when `n_theta_samples <= 0`. If provided, the point estimate becomes
+        when `n_mc_samples <= 0`. If provided, the point estimate becomes
         the Beta posterior quantile `q` instead of the posterior mean. Used
         only for `channel`, `scalar_uniform_confusion`, and
         `diag_uniform_confusion`.
     sample_label_dirichlet : bool, default=False
         If True, sample Dirichlet-distributed label parameters
-        (`g` in `channel`, confusion rows in `full_confusion`); otherwise use
-        posterior means.
+        (`g` in `channel`, confusion rows in `full_confusion`) using
+        `n_mc_samples` draws; otherwise use posterior means.
     channel_wrong_label_mode : {"normalize", "sample_dirichlet_wrong"}, /
             default="normalize"
         Wrong-label construction for `channel_variant="channel"`:
@@ -205,7 +207,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         use_ess_label_dirichlet: bool = False,
         tau_label_dirichlet: float = 1.0,
         top_m: int | None = None,
-        n_theta_samples: int = 1,
+        n_mc_samples: int = 1,
         theta_ucb_quantile: float | None = None,
         sample_label_dirichlet: bool = False,
         channel_wrong_label_mode: str = "normalize",
@@ -239,7 +241,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         self.use_ess_label_dirichlet = bool(use_ess_label_dirichlet)
         self.tau_label_dirichlet = float(tau_label_dirichlet)
         self.top_m = None if top_m is None else int(top_m)
-        self.n_theta_samples = int(n_theta_samples)
+        self.n_mc_samples = int(n_mc_samples)
         self.theta_ucb_quantile = (
             None
             if theta_ucb_quantile is None
@@ -356,10 +358,10 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         if (
             self.theta_ucb_quantile is not None
-            and self.n_theta_samples > 0
+            and self.n_mc_samples > 0
         ):
             raise ValueError(
-                "theta_ucb_quantile requires n_theta_samples <= 0"
+                "theta_ucb_quantile requires n_mc_samples <= 0"
             )
 
         uses_label_dirichlet = self.channel_variant in {
@@ -679,8 +681,7 @@ class KernelSmoothedBayesianGain(PairScorer):
 
                 # Deterministic full-K path: reuse the shared closed-form gain helper.
                 if (
-                    self.n_theta_samples <= 0
-                    and not self.sample_label_dirichlet
+                    self.n_mc_samples <= 0
                     and (self.top_m is None or self.top_m >= K)
                 ):
                     U_col = self._ig_channel_full_batch(
@@ -825,13 +826,15 @@ class KernelSmoothedBayesianGain(PairScorer):
             raise ValueError(
                 f"r must have shape (n_samples, n_classes), got {r.shape}."
             )
+        T = self._mc_draw_count()
+
         if self.class_prior == "classifier":
-            return r
+            return np.repeat(r[:, None, :], T, axis=1)
         K = r.shape[1]
         if K < 2:
             raise ValueError("IG requires at least 2 classes.")
         if self.class_prior == "uniform":
-            return np.full_like(r, 1.0 / K, dtype=float)
+            return np.full((r.shape[0], T, K), 1.0 / K, dtype=float)
 
         if (
             X_cand_emb is None
@@ -879,16 +882,19 @@ class KernelSmoothedBayesianGain(PairScorer):
             tau=self.tau_class_prior,
         )
 
-        if self.sample_class_prior:
+        if self.sample_class_prior and self.n_mc_samples > 0:
             if rng is None:
                 raise ValueError(
                     "sample_class_prior=True requires an RNG."
                 )
-            alpha_bt = np.clip(alpha, 1e-12, None)
+            alpha_bt = np.clip(alpha[:, None, :], 1e-12, None)
+            if T != 1:
+                alpha_bt = np.repeat(alpha_bt, T, axis=1)
             X = rng.gamma(shape=alpha_bt, scale=1.0)
-            return X / np.maximum(X.sum(axis=1, keepdims=True), 1e-12)
+            return X / np.maximum(X.sum(axis=2, keepdims=True), 1e-12)
 
-        return alpha / np.maximum(alpha.sum(axis=1, keepdims=True), 1e-12)
+        mean = alpha / np.maximum(alpha.sum(axis=1, keepdims=True), 1e-12)
+        return np.repeat(mean[:, None, :], T, axis=1)
 
     # -------------------------
     # Gain computation
@@ -907,25 +913,32 @@ class KernelSmoothedBayesianGain(PairScorer):
         beta = np.asarray(beta, dtype=float)
         gamma = np.asarray(gamma, dtype=float)
 
-        S, K = r.shape
-        thetas = self._sample_theta_batch(alpha=alpha, beta=beta, rng=rng)
-        T = thetas.shape[1]
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch channel."
+            )
+        S, T, K = r.shape
+        thetas = self._sample_theta_batch(
+            alpha=alpha,
+            beta=beta,
+            rng=rng,
+            n_draws=T,
+        )
 
         if self.channel_wrong_label_mode == "sample_dirichlet_wrong":
             Cs = self._channel_confusion_from_wrong_dirichlet_batch(
                 gamma=gamma,
                 theta=thetas,
                 rng=rng,
-                sample=self.sample_label_dirichlet,
+                sample=self._use_mc_label_dirichlet(),
             )
-            r_rep = np.repeat(r[:, None, :], T, axis=1)
             ig_draws = self._pair_gain(
-                r_rep,
+                r,
                 C=Cs,
             )
             return ig_draws.mean(axis=1)
 
-        if self.sample_label_dirichlet:
+        if self._use_mc_label_dirichlet():
             g_alpha = np.clip(gamma[:, None, :], 1e-12, None)
             if T != 1:
                 g_alpha = np.repeat(g_alpha, T, axis=1)
@@ -935,9 +948,8 @@ class KernelSmoothedBayesianGain(PairScorer):
             g_mean = gamma / np.maximum(gamma.sum(axis=1, keepdims=True), 1e-12)
             g = np.repeat(g_mean[:, None, :], T, axis=1)
 
-        r_rep = np.repeat(r[:, None, :], T, axis=1)
         ig_draws = self._pair_gain(
-            r_rep.reshape(-1, K),
+            r.reshape(-1, K),
             P_perf=thetas.reshape(-1, 1),
             P_annot=g.reshape(-1, 1, K),
         ).reshape(S, T)
@@ -962,39 +974,51 @@ class KernelSmoothedBayesianGain(PairScorer):
             r=r, gamma=gamma, top_m=top_m
         )
 
-        thetas = self._sample_theta_batch(alpha=alpha, beta=beta, rng=rng)
-        T = thetas.shape[1]
+        if r_red.ndim != 3:
+            raise ValueError(
+                "r_red must have shape (n_samples, n_draws, n_classes)."
+            )
+        S, T, K_red = r_red.shape
+        thetas = self._sample_theta_batch(
+            alpha=alpha,
+            beta=beta,
+            rng=rng,
+            n_draws=T,
+        )
 
         if self.channel_wrong_label_mode == "sample_dirichlet_wrong":
             Cs = self._channel_confusion_from_wrong_dirichlet_batch(
                 gamma=gamma_red,
                 theta=thetas,
                 rng=rng,
-                sample=self.sample_label_dirichlet,
+                sample=self._use_mc_label_dirichlet(),
             )
-            r_rep = np.repeat(r_red[:, None, :], T, axis=1)
             ig_draws = self._pair_gain(
-                r_rep,
+                r_red,
                 C=Cs,
             )
             return ig_draws.mean(axis=1)
 
-        if self.sample_label_dirichlet:
-            g_alpha = np.clip(gamma_red[:, None, :], 1e-12, None)
-            if T != 1:
-                g_alpha = np.repeat(g_alpha, T, axis=1)
+        if self._use_mc_label_dirichlet():
+            if gamma_red.ndim == 2:
+                g_alpha = np.clip(gamma_red[:, None, :], 1e-12, None)
+                if T != 1:
+                    g_alpha = np.repeat(g_alpha, T, axis=1)
+            else:
+                g_alpha = np.clip(gamma_red, 1e-12, None)
             g_red = rng.gamma(shape=g_alpha, scale=1.0)
             g_red = g_red / np.maximum(g_red.sum(axis=-1, keepdims=True), 1e-12)
         else:
             g_mean_red = gamma_red / np.maximum(
-                gamma_red.sum(axis=1, keepdims=True), 1e-12
+                gamma_red.sum(axis=-1, keepdims=True), 1e-12
             )
-            g_red = np.repeat(g_mean_red[:, None, :], T, axis=1)
+            if gamma_red.ndim == 2:
+                g_red = np.repeat(g_mean_red[:, None, :], T, axis=1)
+            else:
+                g_red = g_mean_red
 
-        S, K_red = r_red.shape
-        r_rep = np.repeat(r_red[:, None, :], T, axis=1)
         ig_draws = self._pair_gain(
-            r_rep.reshape(-1, K_red),
+            r_red.reshape(-1, K_red),
             P_perf=thetas.reshape(-1, 1),
             P_annot=g_red.reshape(-1, 1, K_red),
         ).reshape(S, T)
@@ -1012,9 +1036,17 @@ class KernelSmoothedBayesianGain(PairScorer):
         alpha = np.asarray(alpha, dtype=float)
         beta = np.asarray(beta, dtype=float)
 
-        S, K = r.shape
-        thetas = self._sample_theta_batch(alpha=alpha, beta=beta, rng=rng)
-        T = thetas.shape[1]
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch confusion."
+            )
+        _, T, K = r.shape
+        thetas = self._sample_theta_batch(
+            alpha=alpha,
+            beta=beta,
+            rng=rng,
+            n_draws=T,
+        )
 
         eye = np.eye(K, dtype=float)[None, None, :, :]
         off_base = (
@@ -1024,9 +1056,8 @@ class KernelSmoothedBayesianGain(PairScorer):
             ..., None, None
         ] * eye
 
-        r_rep = np.repeat(r[:, None, :], T, axis=1)
         ig_draws = self._pair_gain(
-            r_rep,
+            r,
             C=Cs,
         )
         return ig_draws.mean(axis=1)
@@ -1043,8 +1074,12 @@ class KernelSmoothedBayesianGain(PairScorer):
         alpha = np.asarray(alpha, dtype=float)
         beta = np.asarray(beta, dtype=float)
 
-        S, K = r.shape
-        if self.n_theta_samples <= 0:
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch confusion."
+            )
+        S, T, K = r.shape
+        if self.n_mc_samples <= 0:
             thetas = self._theta_ucb_point_estimate(
                 alpha=alpha,
                 beta=beta,
@@ -1053,18 +1088,16 @@ class KernelSmoothedBayesianGain(PairScorer):
             thetas = rng.beta(
                 alpha[:, None, :],
                 beta[:, None, :],
-                size=(S, self.n_theta_samples, K),
+                size=(S, T, K),
             ).astype(float)
 
-        T = thetas.shape[1]
         off = (1.0 - thetas) / (K - 1)
         Cs = np.repeat(off[..., None], K, axis=-1)
         idx = np.arange(K)
         Cs[..., idx, idx] = thetas
 
-        r_rep = np.repeat(r[:, None, :], T, axis=1)
         ig_draws = self._pair_gain(
-            r_rep,
+            r,
             C=Cs,
         )
         return ig_draws.mean(axis=1)
@@ -1084,21 +1117,24 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "delta must have shape (n_samples, K, K) in batch full_confusion."
             )
 
-        if not self.sample_label_dirichlet:
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch confusion."
+            )
+
+        T = r.shape[1]
+        if not self._use_mc_label_dirichlet():
             C_mean = delta / np.maximum(delta.sum(axis=2, keepdims=True), 1e-12)
-            Cs = C_mean[:, None, :, :]
+            Cs = np.repeat(C_mean[:, None, :, :], T, axis=1)
         else:
-            T = max(self.n_theta_samples, 1)
             alpha = np.clip(delta[:, None, :, :], 1e-12, None)
             if T != 1:
                 alpha = np.repeat(alpha, T, axis=1)
             X = rng.gamma(shape=alpha, scale=1.0)
             Cs = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
 
-        T = Cs.shape[1]
-        r_rep = np.repeat(r[:, None, :], T, axis=1)
         ig_draws = self._pair_gain(
-            r_rep,
+            r,
             C=Cs,
         )
         return ig_draws.mean(axis=1)
@@ -1127,10 +1163,13 @@ class KernelSmoothedBayesianGain(PairScorer):
         alpha: np.ndarray,
         beta: np.ndarray,
         rng: np.random.Generator,
+        n_draws: int,
     ) -> np.ndarray:
         alpha = np.asarray(alpha, dtype=float)
         beta = np.asarray(beta, dtype=float)
-        if self.n_theta_samples <= 0:
+        if n_draws <= 0:
+            raise ValueError("n_draws must be positive.")
+        if self.n_mc_samples <= 0:
             return self._theta_ucb_point_estimate(
                 alpha=alpha,
                 beta=beta,
@@ -1138,7 +1177,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         return rng.beta(
             alpha[:, None],
             beta[:, None],
-            size=(alpha.shape[0], self.n_theta_samples),
+            size=(alpha.shape[0], n_draws),
         ).astype(float)
 
     def _theta_ucb_point_estimate(
@@ -1167,32 +1206,57 @@ class KernelSmoothedBayesianGain(PairScorer):
     ) -> tuple[np.ndarray, np.ndarray]:
         r = np.asarray(r, dtype=float)
         gamma = np.asarray(gamma, dtype=float)
-        if r.ndim != 2 or gamma.ndim != 2 or r.shape != gamma.shape:
+        if r.ndim == 2:
+            if gamma.ndim != 2 or r.shape != gamma.shape:
+                raise ValueError(
+                    "r and gamma must be 2D with identical shape (n_samples, n_classes)."
+                )
+            S, K = r.shape
+        elif r.ndim == 3:
+            if gamma.ndim != 2 or r.shape[0] != gamma.shape[0] or r.shape[2] != gamma.shape[1]:
+                raise ValueError(
+                    "For 3D r, gamma must have shape (n_samples, n_classes)."
+                )
+            S, _, K = r.shape
+        else:
             raise ValueError(
-                "r and gamma must be 2D with identical shape (n_samples, n_classes)."
+                "r must be 2D or 3D with classes on the last axis."
             )
-        S, K = r.shape
         if K < 2:
             raise ValueError("IG requires at least 2 classes.")
         if not (1 <= top_m < K):
             raise ValueError("top_m must satisfy 1 <= top_m < n_classes.")
 
-        idx_part = np.argpartition(-r, kth=top_m - 1, axis=1)[:, :top_m]
-        r_top_part = np.take_along_axis(r, idx_part, axis=1)
-        order = np.argsort(-r_top_part, axis=1)
-        idx = np.take_along_axis(idx_part, order, axis=1)
+        axis = r.ndim - 1
+        idx_part = np.argpartition(-r, kth=top_m - 1, axis=axis)[..., :top_m]
+        r_top_part = np.take_along_axis(r, idx_part, axis=axis)
+        order = np.argsort(-r_top_part, axis=axis)
+        idx = np.take_along_axis(idx_part, order, axis=axis)
 
-        r_top = np.take_along_axis(r, idx, axis=1)
-        r_other = np.maximum(1.0 - r_top.sum(axis=1), 0.0)
-        r_red = np.concatenate([r_top, r_other[:, None]], axis=1)
+        r_top = np.take_along_axis(r, idx, axis=axis)
+        r_other = np.maximum(1.0 - r_top.sum(axis=axis), 0.0)
+        r_red = np.concatenate([r_top, r_other[..., None]], axis=axis)
         r_red = np.clip(r_red, eps, 1.0)
-        r_red = r_red / np.maximum(r_red.sum(axis=1, keepdims=True), eps)
+        r_red = r_red / np.maximum(r_red.sum(axis=axis, keepdims=True), eps)
 
-        gamma_top = np.take_along_axis(gamma, idx, axis=1)
-        gamma_other = np.maximum(
-            gamma.sum(axis=1) - gamma_top.sum(axis=1), eps
-        )
-        gamma_red = np.concatenate([gamma_top, gamma_other[:, None]], axis=1)
+        if r.ndim == 2:
+            gamma_top = np.take_along_axis(gamma, idx, axis=1)
+            gamma_other = np.maximum(
+                gamma.sum(axis=1) - gamma_top.sum(axis=1), eps
+            )
+            gamma_red = np.concatenate(
+                [gamma_top, gamma_other[:, None]], axis=1
+            )
+        else:
+            T = r.shape[1]
+            gamma_bt = np.broadcast_to(gamma[:, None, :], (S, T, K))
+            gamma_top = np.take_along_axis(gamma_bt, idx, axis=2)
+            gamma_other = np.maximum(
+                gamma_bt.sum(axis=2) - gamma_top.sum(axis=2), eps
+            )
+            gamma_red = np.concatenate(
+                [gamma_top, gamma_other[..., None]], axis=2
+            )
         gamma_red = np.clip(gamma_red, eps, None)
 
         return r_red, gamma_red
@@ -1209,17 +1273,24 @@ class KernelSmoothedBayesianGain(PairScorer):
         gamma = np.asarray(gamma, dtype=float)
         theta = np.asarray(theta, dtype=float)
 
-        if gamma.ndim != 2:
+        if gamma.ndim not in {2, 3}:
             raise ValueError(
-                f"gamma must have shape (n_samples, K), got {gamma.shape}."
+                f"gamma must have shape (n_samples, K) or (n_samples, n_draws, K), got {gamma.shape}."
             )
-        if theta.ndim != 2 or theta.shape[0] != gamma.shape[0]:
+        if theta.ndim != 2:
             raise ValueError(
                 f"theta must have shape (n_samples, n_draws), got {theta.shape}."
             )
+        if gamma.shape[0] != theta.shape[0]:
+            raise ValueError("gamma and theta must agree on n_samples.")
 
-        S, K = gamma.shape
         T = theta.shape[1]
+        if gamma.ndim == 2:
+            gamma = np.repeat(gamma[:, None, :], T, axis=1)
+        elif gamma.shape[1] != T:
+            raise ValueError("gamma and theta must agree on n_draws.")
+
+        S, _, K = gamma.shape
         gamma = np.clip(gamma, eps, None)
         theta = np.clip(theta, 0.0, 1.0)
 
@@ -1230,21 +1301,21 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         for z in range(K):
             off_idx = idx != z
-            alpha = gamma[:, off_idx]
+            alpha = gamma[:, :, off_idx]
             if sample:
-                alpha_bt = alpha[:, None, :]
-                if T != 1:
-                    alpha_bt = np.repeat(alpha_bt, T, axis=1)
-                x = rng.gamma(shape=alpha_bt, scale=1.0)
+                x = rng.gamma(shape=alpha, scale=1.0)
                 off = x / np.maximum(x.sum(axis=-1, keepdims=True), eps)
             else:
                 off = alpha / np.maximum(alpha.sum(axis=-1, keepdims=True), eps)
-                off = off[:, None, :]
-                if T != 1:
-                    off = np.repeat(off, T, axis=1)
             C[:, :, z, off_idx] = off_scale * off
 
         return C
+
+    def _mc_draw_count(self) -> int:
+        return 1 if self.n_mc_samples <= 0 else self.n_mc_samples
+
+    def _use_mc_label_dirichlet(self) -> bool:
+        return self.sample_label_dirichlet and self.n_mc_samples > 0
 
     @classmethod
     def _full_confusion_dirichlet_prior(
