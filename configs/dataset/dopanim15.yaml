@@ -1,0 +1,10 @@
+_target_: src.dataset.HFDatasetSpec
+source: ${paths.master_dir}/dopanim_full
+source_kind: from_disk
+cache_dir: ${paths.dataset_cache_dir}
+train_splits: [train]
+test_split: test
+x_key: image
+y_key: label
+z_key: z
+trust_remote_code: false
