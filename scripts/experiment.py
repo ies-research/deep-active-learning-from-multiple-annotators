@@ -67,24 +67,16 @@ def experiment(cfg):
     # Load dataset. -----------------------------------------------------------
     spec = instantiate(cfg.dataset)
     cls_embedder_cfg = getattr(cfg, "classification_embedder", None)
-    sim_embedder_cfg = getattr(cfg, "simulation_embedder", None)
 
     # Backward-compatible fallback for older configs that only define
     # `embedder`.
     if cls_embedder_cfg is None:
         cls_embedder_cfg = cfg.embedder
-    if sim_embedder_cfg is None:
-        sim_embedder_cfg = cls_embedder_cfg
 
     clf_embedder = instantiate(cls_embedder_cfg)
     clf_embedder_fingerprint = getattr(
         clf_embedder, "fingerprint", lambda: None
     )()
-    sim_embedder = instantiate(sim_embedder_cfg)
-    sim_embedder_fingerprint = getattr(
-        sim_embedder, "fingerprint", lambda: None
-    )()
-    use_same_embedder = sim_embedder_fingerprint == clf_embedder_fingerprint
 
     pipe_cfg = instantiate(cfg.pipeline)
     pipe = HFNumpyFeaturePipeline(
@@ -103,6 +95,17 @@ def experiment(cfg):
     # Optional: Simulate noisy labels. ----------------------------------------
     if z_train is None and getattr(cfg, "simulation", None) is not None:
         sim_cfg = instantiate(cfg.simulation)
+        sim_embedder_cfg = getattr(cfg, "simulation_embedder", None)
+        if sim_embedder_cfg is None:
+            sim_embedder_cfg = cls_embedder_cfg
+
+        sim_embedder = instantiate(sim_embedder_cfg)
+        sim_embedder_fingerprint = getattr(
+            sim_embedder, "fingerprint", lambda: None
+        )()
+        use_same_embedder = (
+            sim_embedder_fingerprint == clf_embedder_fingerprint
+        )
 
         # Bind cache to dataset + simulation embedder so classification and
         # simulation can intentionally use different models without reusing
@@ -145,10 +148,6 @@ def experiment(cfg):
             )
         np_arrays["z_train"] = z_train
 
-    if cfg.exit_after_simulation:
-        print("Exiting after simulation as per config.")
-        return
-
     # Print dataset summary. --------------------------------------------------
     pretty_dataset_report(
         classes=classes,
@@ -156,6 +155,10 @@ def experiment(cfg):
         n_samples=n_samples,
         np_arrays=np_arrays,
     )
+
+    if cfg.exit_after_simulation:
+        print("Exiting after simulation as per config.")
+        return
 
     # Seed everything. --------------------------------------------------------
     seed_everything(seed=cfg.seed, deterministic=False)

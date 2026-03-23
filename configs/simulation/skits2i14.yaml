@@ -16,6 +16,14 @@ kmeans_seed: 0
 k_means_max_iter: 100
 k_means_batch_size: 1024
 
+use_difficulty: true
+difficulty_k: 15
+difficulty_metric: entropy
+difficulty_alpha: 1.0
+use_knn_ambiguity: true
+knn_ambiguity_blend: 0.35
+knn_ambiguity_min_samples: 5
+
 # z_train caching (independent of embedder)
 cache_dir: ${paths.crowd_cache_dir}
 cache_version: 1
