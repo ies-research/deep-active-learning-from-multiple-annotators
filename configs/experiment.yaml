@@ -1,8 +1,8 @@
 defaults:
-  - al: dopanim15
+  - al: dopanim
   - classifier: annot_mix
   - paths: default
-  - dataset: dopanim15
+  - dataset: dopanim
   - embedder@classification_embedder: clip
   - embedder@simulation_embedder: null
   - pipeline: default
