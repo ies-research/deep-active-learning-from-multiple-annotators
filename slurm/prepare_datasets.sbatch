@@ -9,7 +9,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-  echo "Usage: sbatch --array=0-7 slurm/prepare_datasets.sbatch [python_executable]" >&2
+  echo "Usage: sbatch --array=0-8 slurm/prepare_datasets.sbatch [python_executable]" >&2
   exit 1
 fi
 
@@ -30,6 +30,7 @@ DATASETS=(
   "skits2i14"
   "banking77"
   "trec6"
+  "letter26"
   "dopanim"
 )
 
@@ -41,6 +42,7 @@ CLASSIFICATION_EMBEDDERS=(
   "wav2vec"
   "minilmv2"
   "minilmv2"
+  "identity_tabular"
   "dinov2"
 )
 
@@ -52,6 +54,7 @@ SIMULATION_EMBEDDERS=(
   "wavlm"
   "mpnetv2"
   "mpnetv2"
+  "identity_tabular"
   "null"
 )
 
@@ -63,10 +66,12 @@ SIMULATION_CONFIGS=(
   "skits2i14"
   "banking77"
   "trec6"
+  "letter26"
   "null"
 )
 
 PREP_STEPS=(
+  "none"
   "none"
   "none"
   "none"

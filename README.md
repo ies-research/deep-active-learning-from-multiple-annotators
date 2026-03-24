@@ -88,7 +88,14 @@ Current array index mapping:
 - `4`: `skits2i14`
 - `5`: `banking77`
 - `6`: `trec6`
-- `7`: `dopanim`
+- `7`: `letter_recognition`
+- `8`: `dopanim`
+
+For `letter_recognition`, the script uses the Hugging Face dataset
+`wwydmanski/tabular-letter-recognition` together with the
+`identity_tabular` embedder for both classification and simulation. The
+tabular embedder fits feature-wise standardization on the training split and
+reuses that transform for test and simulation features.
 
 For `dopanim`, the script additionally runs `scripts/prepare_dopanim.py
 --variant full` before preparing embeddings. Its classification embedder is
@@ -101,14 +108,14 @@ Submit the full array with:
 
 ```bash
 source /home/mherde/miniconda3/bin/activate dalc
-sbatch --array=0-7 slurm/prepare_datasets.sbatch
+sbatch --array=0-8 slurm/prepare_datasets.sbatch
 ```
 
 You can also pass a specific Python executable as the first positional
 argument:
 
 ```bash
-sbatch --array=0-7 slurm/prepare_datasets.sbatch /path/to/python
+sbatch --array=0-8 slurm/prepare_datasets.sbatch /path/to/python
 ```
 
 #### Without SLURM
@@ -116,25 +123,25 @@ sbatch --array=0-7 slurm/prepare_datasets.sbatch /path/to/python
 The script can also be executed as a plain shell script by setting
 `SLURM_ARRAY_TASK_ID` manually.
 
-Run one dataset locally, for example `dopanim` (`SLURM_ARRAY_TASK_ID=7`):
+Run one dataset locally, for example `dopanim` (`SLURM_ARRAY_TASK_ID=8`):
 
 ```bash
 source /home/mherde/miniconda3/bin/activate dalc
-SLURM_ARRAY_TASK_ID=7 bash slurm/prepare_datasets.sbatch
+SLURM_ARRAY_TASK_ID=8 bash slurm/prepare_datasets.sbatch
 ```
 
 Run one dataset with a custom Python executable:
 
 ```bash
 source /home/mherde/miniconda3/bin/activate dalc
-SLURM_ARRAY_TASK_ID=7 bash slurm/prepare_datasets.sbatch /path/to/python
+SLURM_ARRAY_TASK_ID=8 bash slurm/prepare_datasets.sbatch /path/to/python
 ```
 
 Run the full preparation sequence locally:
 
 ```bash
 source /home/mherde/miniconda3/bin/activate dalc
-for i in {0..7}; do
+for i in {0..8}; do
   SLURM_ARRAY_TASK_ID=$i bash slurm/prepare_datasets.sbatch
 done
 ```

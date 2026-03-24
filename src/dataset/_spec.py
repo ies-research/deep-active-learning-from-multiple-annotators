@@ -19,7 +19,7 @@ class HFDatasetSpec:
     train_splits: Sequence[str] = ("train",)
     test_split: str = "test"
 
-    x_key: str = "image"
+    x_key: str | Sequence[str] = "image"
     y_key: str = "label"
     z_key: Optional[str] = None
 

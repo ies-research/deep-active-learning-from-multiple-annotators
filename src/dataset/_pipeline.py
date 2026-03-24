@@ -5,11 +5,16 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Callable
 
 import numpy as np
+from skactiveml.utils import ExtLabelEncoder
 
 from ..embedder import Embedder
 from ._spec import HFDatasetSpec
 from ._io import load_datasetdict, merge_train_splits, spec_fingerprint
-from ._utils import as_int_array, stack_fixed
+from ._utils import (
+    infer_label_values,
+    stack_fixed,
+    stack_tabular_columns,
+)
 from ._cache import sha1_json, npz_load, npz_save
 
 
@@ -56,7 +61,7 @@ class HFNumpyFeaturePipeline:
     spec.
 
     This pipeline loads a HuggingFace DatasetDict according to `HFDatasetSpec`,
-    embeds the input images using an `Embedder`, and returns arrays:
+    embeds the input data using an `Embedder`, and returns arrays:
 
     - `X_train`, `X_test`: **memory-mapped** arrays backed by `.npy` files
     - `y_train`, `y_test`: in-memory integer arrays
@@ -71,7 +76,7 @@ class HFNumpyFeaturePipeline:
     spec : HFDatasetSpec
         Dataset specification (split names, column keys, etc.).
     embedder : Embedder
-        Embedder that converts a batch of images to a NumPy array.
+        Embedder that converts a batch of inputs to a NumPy array.
     cfg : PipelineConfig or None, default=None
         Pipeline configuration.
 
@@ -106,6 +111,8 @@ class HFNumpyFeaturePipeline:
         self.embedder = embedder
         self.cfg = cfg or PipelineConfig()
         self.x_adapter = x_adapter
+        self.label_encoder_: ExtLabelEncoder | None = None
+        self.label_values_: tuple[Any, ...] | None = None
 
         if self.cfg.cache_dir is None:
             raise ValueError(
@@ -126,6 +133,8 @@ class HFNumpyFeaturePipeline:
         ds = load_datasetdict(self.spec)
         train_ds = merge_train_splits(ds, self.spec)
         test_ds = ds[self.spec.test_split]
+        self._fit_label_encoder(train_ds=train_ds, test_ds=test_ds)
+        self._fit_embedder(train_ds)
 
         X_train, y_train, z_train = self._compute_or_load_split(
             train_ds, split_name="train"
@@ -225,7 +234,16 @@ class HFNumpyFeaturePipeline:
         z : numpy.ndarray or None
             Optional integer array (in-memory).
         """
-        y = as_int_array(split_ds[self.spec.y_key])
+        if self.label_encoder_ is None:
+            if len(split_ds) == 0:
+                y = np.empty((0,), dtype=np.int64)
+            else:
+                raise RuntimeError(
+                    "Label encoder has not been initialized. Call "
+                    "get_arrays() before extracting split labels."
+                )
+        else:
+            y = self.label_encoder_.transform(split_ds[self.spec.y_key])
 
         z = None
         if (
@@ -238,6 +256,8 @@ class HFNumpyFeaturePipeline:
 
     def _is_hf_audio_column(self, ds) -> bool:
         """Return True if ds.features[x_key] is an Audio feature."""
+        if self._uses_multi_column_x():
+            return False
         try:
             from datasets import Audio as HFAudio  # newer alias
         except Exception:
@@ -272,15 +292,68 @@ class HFNumpyFeaturePipeline:
             self.spec.x_key, HFAudio(sampling_rate=int(target_sr))
         )
 
+    def _uses_multi_column_x(self) -> bool:
+        return not isinstance(self.spec.x_key, str)
+
+    def _x_key_names(self) -> tuple[str, ...]:
+        if isinstance(self.spec.x_key, str):
+            return (self.spec.x_key,)
+        return tuple(self.spec.x_key)
+
+    def _extract_x_values(self, batch_or_split):
+        if self._uses_multi_column_x():
+            return {
+                name: batch_or_split[name] for name in self._x_key_names()
+            }
+        return batch_or_split[self.spec.x_key]
+
+    def _fit_label_encoder(self, *, train_ds, test_ds) -> None:
+        feature = getattr(train_ds, "features", {}).get(self.spec.y_key, None)
+        label_values = infer_label_values(
+            train_ds[self.spec.y_key],
+            test_ds[self.spec.y_key],
+            feature=feature,
+        )
+        self.label_values_ = tuple(label_values)
+        if len(self.label_values_) == 0:
+            self.label_encoder_ = None
+            return
+
+        self.label_encoder_ = ExtLabelEncoder(
+            classes=self.label_values_,
+            missing_label=None,
+        )
+        self.label_encoder_.fit(train_ds[self.spec.y_key])
+
+    def _fit_embedder(self, train_ds) -> None:
+        fit_fn = getattr(self.embedder, "fit", None)
+        if not callable(fit_fn):
+            return
+        if len(train_ds) == 0:
+            return
+
+        train_ds = self._maybe_cast_audio_sampling_rate(train_ds)
+        raw_x = self._extract_x_values(train_ds)
+        X_fit = self._prepare_x(raw_x)
+        fit_fn(X_fit)
+
     def _prepare_x(self, batch_x):
         """
         Convert HF batch values into the input expected by the embedder.
+        - tabular: dict[str, list[number]] -> ndarray (N, D)
         - text: list[str] -> unchanged
         - images: list[PIL/np] -> unchanged
         - audio: list[{"array":..., "sampling_rate":...}] -> list[np.ndarray 1D float32]
         """
         if self.x_adapter is not None:
             return self.x_adapter(batch_x)
+
+        if self._uses_multi_column_x():
+            return stack_tabular_columns(
+                batch_x,
+                column_order=self._x_key_names(),
+                dtype=np.float32,
+            )
 
         # numpy object array -> list
         if isinstance(batch_x, np.ndarray) and batch_x.dtype == object:
@@ -391,7 +464,7 @@ class HFNumpyFeaturePipeline:
         # Probe first batch to infer the per-sample embedding shape.
         # This is necessary to preallocate the memmap with the final shape.
         first_batch = split_ds[0 : min(bs, n)]
-        X_in0 = self._prepare_x(first_batch[self.spec.x_key])
+        X_in0 = self._prepare_x(self._extract_x_values(first_batch))
 
         X0 = np.asarray(self.embedder.embed(X_in0), dtype=np.float32)
         per_sample_shape = X0.shape[1:]  # (D,) or (T, D) or (C, H, W), etc.
@@ -411,7 +484,7 @@ class HFNumpyFeaturePipeline:
         for start in range(len(X0), n, bs):
             end = min(start + bs, n)
             batch = split_ds[start:end]
-            X_in = self._prepare_x(batch[self.spec.x_key])
+            X_in = self._prepare_x(self._extract_x_values(batch))
 
             Xb = np.asarray(self.embedder.embed(X_in), dtype=np.float32)
 

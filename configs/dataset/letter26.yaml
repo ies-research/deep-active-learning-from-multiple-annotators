@@ -1,0 +1,10 @@
+_target_: src.dataset.HFDatasetSpec
+source: wwydmanski/tabular-letter-recognition
+source_kind: hub_or_local_script
+cache_dir: ${paths.dataset_cache_dir}
+train_splits: [train]
+test_split: test
+x_key: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"]
+y_key: target
+z_key: null
+trust_remote_code: false

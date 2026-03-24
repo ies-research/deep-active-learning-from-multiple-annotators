@@ -1,0 +1,29 @@
+defaults:
+  - profile@_here_: easy
+  - _self_
+
+_target_: src.dataset.CrowdSimConfig
+
+seed: 0
+n_annotators: 40
+allocation: deterministic
+missing_rate: 0.0
+missing_value: -1
+
+use_clusters: true
+n_clusters: 52
+kmeans_seed: 0
+k_means_max_iter: 100
+k_means_batch_size: 1024
+
+use_difficulty: true
+difficulty_k: 15
+difficulty_metric: entropy
+difficulty_alpha: 1.0
+use_knn_ambiguity: true
+knn_ambiguity_blend: 0.35
+knn_ambiguity_min_samples: 5
+
+cache_dir: ${paths.crowd_cache_dir}
+cache_version: 1
+cache_store_metadata: true
