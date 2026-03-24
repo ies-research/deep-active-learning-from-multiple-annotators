@@ -1,3 +1,4 @@
+from ._performance import PerformancePairScorer
 from ._ig import InformationGainPairScorer
 from ._keig import KernelEvidenceInformationGain
 from ._random import RandomPairScorer
@@ -6,6 +7,7 @@ from ._ks_big import KernelSmoothedBayesianGain
 
 
 __all__ = [
+    "PerformancePairScorer",
     "InformationGainPairScorer",
     "KernelEvidenceInformationGain",
     "RandomPairScorer",
