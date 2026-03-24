@@ -1,9 +1,9 @@
 defaults:
   - al: dopanim
-  - classifier: annot_mix
+  - classifier: crowd_em
   - paths: default
   - dataset: dopanim
-  - embedder@classification_embedder: clip
+  - embedder@classification_embedder: dinov2
   - embedder@simulation_embedder: null
   - pipeline: default
   - simulation: null
@@ -11,7 +11,7 @@ defaults:
   - training: default
   - scheduler: step_ratio_1
   - sample@sample.init: typi_clust
-  - sample@sample.actual: falcun
+  - sample@sample.actual: random
   - scorer@scorer.init: random
   - scorer@scorer.actual: random
   - assigner@assigner.init: quota_sample
