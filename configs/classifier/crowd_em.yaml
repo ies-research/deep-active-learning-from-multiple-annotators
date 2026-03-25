@@ -3,6 +3,6 @@ _convert_: all
 max_iter: 10
 tol: 1e-3
 annot_prior_full: 1.0
-annot_prior_diag: 0.0
+annot_prior_diag: 0.1
 warm_start_m_step: true
 sample_dtype: float32

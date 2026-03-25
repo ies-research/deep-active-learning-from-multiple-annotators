@@ -3,9 +3,7 @@ try:
 
     from sklearn.utils.validation import check_array
     from torch import nn
-    from torch.nn import functional as F
 
-    from skactiveml.base import SkactivemlClassifier
     from skactiveml.utils import (
         MISSING_LABEL,
         check_n_features,
@@ -118,51 +116,25 @@ try:
             self.dawid_skene_smoothing = dawid_skene_smoothing
 
         def _fit(self, fit_function, X, y, **fit_params):
-            """
-            Initialize and fit the internal `skorch` model on training
-            data.
+            """Fit the classifier on a multi-annotator label matrix."""
+            self._check_multiannotator_y(y)
+            return super()._fit(fit_function, X, y, **fit_params)
 
-            If the model is uninitialized, or `fit_function == 'fit'` and
-            `self.neural_net_.warm_start` is `False`, the network is
-            re-initialized.
+        def _return_training_data(self, X, y):
+            X_train, y_train = super()._return_training_data(X=X, y=y)
+            if y_train is None:
+                return X_train, y_train
+            return X_train, self._aggregate_targets(y=y_train)
 
-            Parameters
-            ----------
-            fit_function : {'fit', 'partial_fit'}
-                Name of the caller, used to decide whether to reinitialize when
-                warm start is off.
-            X : array-like of shape (n_samples, ...)
-                Training inputs (may include unlabeled samples).
-            y : array-like of shape (n_samples, ...)
-                Training targets; unlabeled entries must follow the subclass'
-                convention (e.g., `self.missing_label`).
-            **fit_params : dict
-                Extra keyword arguments forwarded to
-                `self.neural_net_.partial_fit`.
-
-            Returns
-            -------
-            self : SkorchMixin
-                The fitted estimator.
-            """
-            need_reinit = (not hasattr(self, "neural_net_")) or (
-                fit_function == "fit"
-                and not getattr(self.neural_net_, "warm_start", False)
-            )
-            if need_reinit:
-                _, X, y = self.initialize(X=X, y=y, enforce_check_X_y=True)
-            else:
-                vd_kwargs = self._validate_data_kwargs()
-                X, y, _ = self._validate_data(X=X, y=y, **vd_kwargs)
-
-            X_train, y_train = self._return_training_data(X=X, y=y)
-            if X_train is not None and y_train is not None:
-                y_train_agg = self._aggregate_targets(y=y_train)
-                self.neural_net_.partial_fit(
-                    X_train, y_train_agg, **fit_params
+        @staticmethod
+        def _check_multiannotator_y(y):
+            if y is None:
+                raise ValueError("`y` must not be None.")
+            if np.asarray(y).ndim != 2:
+                raise ValueError(
+                    "`y` must have shape (n_samples, n_annotators) for "
+                    "multi-annotator training."
                 )
-            return self
-
 
         def _aggregate_targets(self, y):
             if self.aggregate_function == "majority_voting":
@@ -209,75 +181,6 @@ try:
                     f"{self.aggregate_function!r} is not "
                     "'dawid_skene_voting'."
                 )
-
-        def predict(
-            self,
-            X,
-            extra_outputs=None,
-        ):
-            """Return class predictions for the test samples `X`.
-
-            By default, this method returns only the class predictions
-            `y_pred`. If `extra_outputs` is provided, a tuple is returned whose
-            first element is `y_pred` and whose remaining elements are the
-            requested additional forward outputs, in the order specified by
-            `extra_outputs`.
-
-            Parameters
-            ----------
-            X : array-like of shape (n_samples, ...)
-                Test samples.
-            extra_outputs : None or str or sequence of str, default=None
-                Names of additional outputs to return next to `y_pred`. The
-                names must be a subset of the following keys:
-
-                - "logits" : Additionally return the class-membership logits
-                  `L_class` for the samples in `X`.
-                - "embeddings" : Additionally return the learned embeddings
-                  `X_embed` for the samples in `X`.
-                - "annotator_perf" : additionally return the estimated
-                  annotator performance probabilities `P_perf` for each sample-
-                  annotator pair (available only for `aggregate_function=
-                  'dawid_skene'`).
-                - "annotator_class" : Additionally return the annotator–class
-                  probability estimates `P_annot` for each sample, class, and
-                  annotator (available only for `aggregate_function=
-                  'dawid_skene'`).
-                - "annotator_confusion_matrices" : Additionally return the
-                  Dawid-Skene annotator confusion matrices `C` of shape
-                  `(n_annotators, n_classes, n_classes)`.
-
-            Returns
-            -------
-            y_pred : numpy.ndarray of shape (n_samples,)
-                Class predictions of the test samples.
-            *extras : numpy.ndarray, optional
-                Only returned if `extra_outputs` is not `None`. In that
-                case, the method returns a tuple whose first element is
-                `y_pred` and whose remaining elements correspond to the
-                requested forward outputs in the order given by
-                `extra_outputs`. Potential outputs are:
-
-                - `L_class` : `np.ndarray` of shape `(n_samples, n_classes)`,
-                  where `L_class[n, c]` is the logit for the class
-                  `classes_[c]` of sample `X[n]`.
-                - `X_embed` : `np.ndarray` of shape `(n_samples, ...)`, where
-                  `X_embed[n]` refers to the learned embedding for sample
-                  `X[n]`.
-                - `P_perf` : `np.ndarray` of shape `(n_samples, n_annotators)`,
-                  where `P_perf[n, m]` refers to the estimated label
-                  correctness probability (performance) of annotator `m` when
-                  labeling sample `X[n]`.
-                - `P_annot` : `np.ndarray` of shape
-                  `(n_samples, n_annotators, n_classes)`, where
-                  `P_annot[n, m, c]` refers to the probability that annotator
-                  `m` provides the class label `c` for sample `X[n]`.
-            """
-            return SkactivemlClassifier.predict(
-                self,
-                X=X,
-                extra_outputs=extra_outputs,
-            )
 
         def predict_proba(
             self,

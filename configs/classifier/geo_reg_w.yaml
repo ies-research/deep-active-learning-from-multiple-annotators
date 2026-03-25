@@ -1,0 +1,5 @@
+_target_: src.classifier.RegCrowdNetClassifier
+_convert_: all
+regularization: geo-reg-w
+lmbda: 0.001
+sample_dtype: float32

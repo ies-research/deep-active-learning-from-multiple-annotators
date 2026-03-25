@@ -1,0 +1,5 @@
+_target_: src.classifier.RegCrowdNetClassifier
+_convert_: all
+regularization: trace-reg
+lmbda: 0.01
+sample_dtype: float32

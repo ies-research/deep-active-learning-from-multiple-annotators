@@ -4,7 +4,6 @@ try:
     from sklearn.utils.validation import check_array
     from torch import nn
 
-    from skactiveml.base import SkactivemlClassifier
     from skactiveml.classifier.multiannotator._utils import (
         _MultiAnnotatorClassificationModule,
         _SkorchMultiAnnotatorClassifier,
@@ -151,19 +150,18 @@ try:
             self : CrowdEMClassifier
                 The fitted estimator.
             """
-            X, y = self._validate_em_training_inputs(X=X, y=y)
-            if not hasattr(self, "classes_"):
-                self.classes_ = self._infer_classes(y)
-            y = self._encode_annotator_labels(y)
+            self._check_multiannotator_y(y)
             self._validate_em_hyperparameters()
 
             need_reinit = fit_function == "fit" or not hasattr(self, "neural_net_")
             if need_reinit:
                 _, X, y = self.initialize(X=X, y=y, enforce_check_X_y=True)
             else:
+                vd_kwargs = self._validate_data_kwargs()
+                X, y, _ = self._validate_data(X=X, y=y, **vd_kwargs)
                 self._ensure_partial_fit_compatibility(y)
 
-            X_train, y_train = self._extract_labeled_training_data(X=X, y=y)
+            X_train, y_train = super()._return_training_data(X=X, y=y)
             n_classes = len(self.classes_)
             prior_matrices, default_alpha = self._build_annotator_prior(
                 n_classes=n_classes,
@@ -215,65 +213,6 @@ try:
                 self.objective_history_, dtype=np.float64
             )
             return self
-
-        def predict(self, X, extra_outputs=None):
-            """Return class predictions for the test samples `X`.
-
-            By default, this method returns only the class predictions
-            `y_pred`. If `extra_outputs` is provided, a tuple is returned
-            whose first element is `y_pred` and whose remaining elements are
-            the requested additional outputs, in the order specified by
-            `extra_outputs`.
-
-            Parameters
-            ----------
-            X : array-like of shape (n_samples, ...)
-                Test samples.
-            extra_outputs : None or str or sequence of str, default=None
-                Names of additional outputs to return next to `y_pred`. The
-                names must be a subset of the following keys:
-
-                - "logits" : Additionally return the class-membership logits
-                  `L_class` for the samples in `X`.
-                - "embeddings" : Additionally return the learned embeddings
-                  `X_embed` for the samples in `X`.
-                - "annotator_perf" : Additionally return the estimated
-                  annotator correctness probabilities `P_perf` for each
-                  sample-annotator pair.
-                - "annotator_class" : Additionally return the annotator-class
-                  probability estimates `P_annot` for each sample, annotator,
-                  and class.
-
-            Returns
-            -------
-            y_pred : numpy.ndarray of shape (n_samples,)
-                Class predictions of the test samples.
-            *extras : numpy.ndarray, optional
-                Only returned if `extra_outputs` is not `None`. In that case,
-                the method returns a tuple whose first element is `y_pred`
-                and whose remaining elements correspond to the requested
-                outputs in the order given by `extra_outputs`. Potential
-                outputs are:
-
-                - `L_class` : `np.ndarray` of shape `(n_samples, n_classes)`,
-                  where `L_class[n, c]` is the logit for class
-                  `classes_[c]` of sample `X[n]`.
-                - `X_embed` : `np.ndarray` of shape `(n_samples, ...)`, where
-                  `X_embed[n]` refers to the learned embedding for sample
-                  `X[n]`.
-                - `P_perf` : `np.ndarray` of shape `(n_samples, n_annotators)`,
-                  where `P_perf[n, m]` is the estimated probability that
-                  annotator `m` labels sample `X[n]` correctly.
-                - `P_annot` : `np.ndarray` of shape
-                  `(n_samples, n_annotators, n_classes)`, where
-                  `P_annot[n, m, c]` is the probability that annotator `m`
-                  outputs class `classes_[c]` for sample `X[n]`.
-            """
-            return SkactivemlClassifier.predict(
-                self,
-                X=X,
-                extra_outputs=extra_outputs,
-            )
 
         def predict_proba(self, X, extra_outputs=None):
             """Return class probability estimates for the test samples `X`.
@@ -406,40 +345,17 @@ try:
             return (p_class, *[named_outputs[name] for name in extra_outputs])
 
         def _build_neural_net_param_overrides(self, X, y):
-            del X, y
             return {"criterion__reduction": "mean"}
 
-        def _validate_em_training_inputs(self, X, y):
-            vd_kwargs = self._validate_data_kwargs()
-            X, y, _ = self._validate_data(X=X, y=y, **vd_kwargs)
+        @staticmethod
+        def _check_multiannotator_y(y):
             if y is None:
                 raise ValueError("`y` must not be None.")
-            if y.ndim != 2:
+            if np.asarray(y).ndim != 2:
                 raise ValueError(
                     "`y` must have shape (n_samples, n_annotators) for "
                     "multi-annotator training."
                 )
-            return X, y
-
-        def _infer_classes(self, y):
-            labeled = y[is_labeled(y, missing_label=-1)]
-            if labeled.size == 0:
-                raise ValueError(
-                    "Cannot infer classes from `y` because all labels are missing."
-                )
-            return np.unique(labeled)
-
-        def _encode_annotator_labels(self, y):
-            y_encoded = np.full(y.shape, fill_value=-1, dtype=np.int64)
-            observed = is_labeled(y, missing_label=-1)
-            for class_idx, class_label in enumerate(np.asarray(self.classes_)):
-                y_encoded[y == class_label] = class_idx
-            if np.any((y_encoded < 0) & observed):
-                unknown = np.unique(y[(y_encoded < 0) & observed])
-                raise ValueError(
-                    f"Observed labels {unknown.tolist()} are not in classes_."
-                )
-            return y_encoded
 
         def _ensure_partial_fit_compatibility(self, y):
             if not hasattr(self, "n_annotators_"):
@@ -504,13 +420,6 @@ try:
                 comparator = "non-negative" if allow_zero else "positive"
                 raise ValueError(f"`{name}` must contain {comparator} values.")
             return prior
-
-        def _extract_labeled_training_data(self, X, y):
-            observed = is_labeled(y, missing_label=-1)
-            covered = observed.any(axis=1)
-            if not np.any(covered):
-                return None, None
-            return X[covered], y[covered].astype(np.int64, copy=False)
 
         def _initialize_latent_posteriors(self, y):
             mu = compute_vote_vectors(

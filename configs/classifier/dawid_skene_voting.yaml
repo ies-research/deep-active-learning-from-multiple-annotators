@@ -1,0 +1,7 @@
+_target_: src.classifier.AggregateClassifier
+_convert_: all
+aggregate_function: "dawid_skene_voting"
+dawid_skene_max_iter: 100
+dawid_skene_tol: 1e-6
+dawid_skene_smoothing: 0.01
+sample_dtype: float32
