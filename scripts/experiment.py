@@ -20,23 +20,23 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def _resolve_annotator_total_capacities(al_cfg, n_annotators):
-    worker_capacity_cfg = getattr(al_cfg, "worker_capacity", None)
-    if worker_capacity_cfg is None:
+    annotator_capacity_cfg = getattr(al_cfg, "annotator_capacity", None)
+    if annotator_capacity_cfg is None:
         return None
 
-    mode = str(getattr(worker_capacity_cfg, "mode", "none")).lower()
+    mode = str(getattr(annotator_capacity_cfg, "mode", "none")).lower()
     if mode == "none":
         return None
 
     if mode != "relative_equal_share":
         raise ValueError(
-            "worker_capacity.mode must be one of "
+            "annotator_capacity.mode must be one of "
             "{'none', 'relative_equal_share'}."
         )
 
-    multiplier = float(getattr(worker_capacity_cfg, "multiplier", 1.0))
+    multiplier = float(getattr(annotator_capacity_cfg, "multiplier", 1.0))
     if multiplier <= 0:
-        raise ValueError("worker_capacity.multiplier must be > 0.")
+        raise ValueError("annotator_capacity.multiplier must be > 0.")
 
     total_pair_budget = int(al_cfg.init_pair_budget) + max(
         int(al_cfg.n_cycles) - 1, 0

@@ -1,10 +1,10 @@
 {
-  "name": "worker_quota_case",
-  "description": "Case study over persistent worker-cap regimes",
+  "name": "annotator_quota_case",
+  "description": "Case study over persistent annotator-capacity regimes",
   "common_overrides": [
     "classifier=annot_mix",
     "sample@sample.actual=margin",
-    "experiment_name=worker_quota_case"
+    "experiment_name=annotator_quota_case"
   ],
   "axes": [
     {
@@ -34,34 +34,34 @@
       "values": {
         "none": {
           "overrides": [
-            "al.worker_capacity.mode=none",
+            "al.annotator_capacity.mode=none",
             "assigner@assigner.actual=greedy_sample"
           ]
         },
         "equal_share": {
           "overrides": [
-            "al.worker_capacity.mode=relative_equal_share",
-            "al.worker_capacity.multiplier=1.0",
+            "al.annotator_capacity.mode=relative_equal_share",
+            "al.annotator_capacity.multiplier=1.0",
             "assigner@assigner.actual=greedy_sample"
           ]
         },
         "mild": {
           "overrides": [
-            "al.worker_capacity.mode=relative_equal_share",
-            "al.worker_capacity.multiplier=1.25",
+            "al.annotator_capacity.mode=relative_equal_share",
+            "al.annotator_capacity.multiplier=1.25",
             "assigner@assigner.actual=greedy_sample"
           ]
         },
         "loose": {
           "overrides": [
-            "al.worker_capacity.mode=relative_equal_share",
-            "al.worker_capacity.multiplier=2.0",
+            "al.annotator_capacity.mode=relative_equal_share",
+            "al.annotator_capacity.multiplier=2.0",
             "assigner@assigner.actual=greedy_sample"
           ]
         },
         "quota_sample": {
           "overrides": [
-            "al.worker_capacity.mode=none",
+            "al.annotator_capacity.mode=none",
             "assigner@assigner.actual=quota_sample"
           ]
         }

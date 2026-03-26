@@ -1,7 +1,7 @@
 n_cycles: 25
 init_pair_budget: 20
 actual_pair_budget: 20
-worker_capacity:
+annotator_capacity:
   mode: none
   multiplier: 1.0
 max_candidate_samples: 5000

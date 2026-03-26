@@ -1,10 +1,10 @@
 {
-  "name": "worker_selection_main",
-  "description": "Main worker-selection benchmark across evaluation datasets",
+  "name": "annotator_selection_main",
+  "description": "Main annotator-selection benchmark across evaluation datasets",
   "common_overrides": [
     "classifier=annot_mix",
     "sample@sample.actual=margin",
-    "experiment_name=worker_selection_main"
+    "experiment_name=annotator_selection_main"
   ],
   "axes": [
     {

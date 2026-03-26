@@ -2,7 +2,7 @@ defaults:
   - profile@_here_: easy
   - _self_
 
-_target_: src.dataset.CrowdSimConfig
+_target_: src.dataset.MultiAnnotatorSimConfig
 
 seed: 0
 n_annotators: 10
@@ -25,6 +25,6 @@ knn_ambiguity_blend: 0.35
 knn_ambiguity_min_samples: 5
 
 # z_train caching (independent of embedder)
-cache_dir: ${paths.crowd_cache_dir}
+cache_dir: ${paths.multi_annotator_cache_dir}
 cache_version: 1
 cache_store_metadata: true

@@ -105,7 +105,7 @@ class KernelSmoothedBayesianGain(PairScorer):
     annotator_lambda : float, default=0.0
         Convex weight on an instance-independent sample kernel in the
         annotator-side posterior updates. `0.0` keeps the local kernel only,
-        while `1.0` yields instance-independent worker estimates.
+        while `1.0` yields instance-independent annotator estimates.
     channel_label_dirichlet_strength : float, default=1.0
         Symmetric Dirichlet prior concentration for the fallback label
         distribution `g` in `channel_variant="channel"` only.

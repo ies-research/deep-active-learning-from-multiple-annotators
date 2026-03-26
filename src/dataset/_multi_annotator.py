@@ -73,9 +73,9 @@ class AnnotatorTypeConfig:
 
 
 @dataclass(frozen=True)
-class CrowdSimConfig:
+class MultiAnnotatorSimConfig:
     """
-    Configuration for crowd simulation and caching.
+    Configuration for multi-annotator simulation and caching.
 
     Simulation model
     ----------------
@@ -189,7 +189,7 @@ class CrowdSimConfig:
 
     types: Sequence[AnnotatorTypeConfig] = ()
 
-    cache_dir: str = ".hf_crowd_cache"
+    cache_dir: str = ".hf_multi_annotator_cache"
     cache_version: int = 1
     cache_store_metadata: bool = True
 
@@ -917,10 +917,10 @@ def simulate_labels(
     return z
 
 
-def simulate_crowd_from_features(
+def simulate_multi_annotator_labels_from_features(
     X_features: np.ndarray,
     y_true: np.ndarray,
-    cfg: CrowdSimConfig,
+    cfg: MultiAnnotatorSimConfig,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Simulate multi-annotator labels z for a dataset split.
@@ -934,7 +934,7 @@ def simulate_crowd_from_features(
     y_true:
         True labels, shape (N,).
     cfg:
-        Crowd simulation configuration.
+        Multi-annotator simulation configuration.
 
     Returns
     -------
@@ -1066,7 +1066,7 @@ def make_z_cache_key(
     *,
     dataset_id: str,
     y_hash: str,
-    cfg: CrowdSimConfig,
+    cfg: MultiAnnotatorSimConfig,
 ) -> str:
     """
     Create a cache key for z_train.
@@ -1106,7 +1106,7 @@ def ensure_z_train_cached(
     dataset_id: str,
     X_train_features: Optional[np.ndarray],
     y_train: np.ndarray,
-    cfg: CrowdSimConfig,
+    cfg: MultiAnnotatorSimConfig,
     embedder_fingerprint: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
@@ -1177,7 +1177,9 @@ def ensure_z_train_cached(
             "X_train is (N,D)."
         )
 
-    z, sim_info = simulate_crowd_from_features(X_train_features, y_train, cfg)
+    z, sim_info = simulate_multi_annotator_labels_from_features(
+        X_train_features, y_train, cfg
+    )
 
     np.savez_compressed(npz_path, z_train=z)
 

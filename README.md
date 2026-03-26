@@ -1,8 +1,9 @@
-# deep-active-learning-from-crowds
+# Deep Active Learning from Multiple Annotators
 
-This repository contains the code used for deep active learning from crowds
-experiments. The README is intended to become the central entry point for
-reproducing results, preparing datasets, and launching runs.
+This repository contains the code used for experiments on deep active
+learning from multiple annotators. The README is intended to become the
+central entry point for reproducing results, preparing datasets, and
+launching runs.
 
 ## Environment
 
@@ -14,13 +15,13 @@ source /home/mherde/miniconda3/bin/activate dalc
 ```
 
 Default paths are defined in
-[configs/paths/default.yaml](/home/mherde/PycharmProjects/deep-active-learning-from-crowds/configs/paths/default.yaml):
+[configs/paths/default.yaml](configs/paths/default.yaml):
 
 - `paths.master_dir=/home/datasets`
 - `paths.dataset_cache_dir=${paths.master_dir}`
 - `paths.embedder_cache_dir=${paths.master_dir}/.hf_embedders`
 - `paths.pipeline_cache_dir=${paths.master_dir}/.hf_embed_cache`
-- `paths.crowd_cache_dir=${paths.master_dir}/.hf_crowd_cache`
+- `paths.multi_annotator_cache_dir=${paths.master_dir}/.hf_multi_annotator_cache`
 
 ## Dataset Preparation
 
@@ -44,7 +45,7 @@ With the current path settings, the script defaults are:
 
 That means `--variant full` writes the processed dataset to
 `/home/datasets/dopanim_full`, which matches
-[configs/dataset/dopanim.yaml](/home/mherde/PycharmProjects/deep-active-learning-from-crowds/configs/dataset/dopanim.yaml).
+[configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml).
 
 Available parameters:
 
@@ -68,16 +69,16 @@ python scripts/prepare_dopanim.py \
 After preparation, run experiments with `dataset=dopanim`. The legacy config
 name `dataset=dopanim15` still exists as an alias. If you build a non-`full`
 variant, either update
-[configs/dataset/dopanim.yaml](/home/mherde/PycharmProjects/deep-active-learning-from-crowds/configs/dataset/dopanim.yaml)
+[configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml)
 or override `dataset.source` at runtime so it points to the matching output
 directory.
 
-### Preparing Cached Embeddings And Simulated Crowd Labels
+### Preparing Cached Embeddings And Simulated Multi-Annotator Labels
 
 The batch entry point for preparing dataset artifacts is
-[slurm/prepare_datasets.sbatch](/home/mherde/PycharmProjects/deep-active-learning-from-crowds/slurm/prepare_datasets.sbatch).
+[slurm/prepare_datasets.sbatch](slurm/prepare_datasets.sbatch).
 It prepares cached embeddings for the configured datasets and, where needed,
-also prepares simulated crowd labels.
+also prepares simulated multi-annotator labels.
 
 Current array index mapping:
 
@@ -99,7 +100,7 @@ reuses that transform for test and simulation features.
 
 For `dopanim`, the script additionally runs `scripts/prepare_dopanim.py
 --variant full` before preparing embeddings. Its classification embedder is
-`dinov2`, and no simulation step is run because `dopanim` already contains crowd
+`dinov2`, and no simulation step is run because `dopanim` already contains annotator
 labels.
 
 #### Via SLURM
@@ -169,7 +170,7 @@ The launch flow consists of two steps:
 Example:
 
 ```bash
-python scripts/generate_manifest.py worker_selection_main
+python scripts/generate_manifest.py annotator_selection_main
 ```
 
 By default, this writes `manifests/<use_case>.jsonl` and prints a short
@@ -179,38 +180,38 @@ To execute a single row locally:
 
 ```bash
 python scripts/run_manifest_row.py \
-  --manifest manifests/worker_selection_main.jsonl \
+  --manifest manifests/annotator_selection_main.jsonl \
   --row 0
 ```
 
 ### Launching A Manifest Via SLURM
 
 The batch entry point is
-[slurm/run_manifest_array.sbatch](/home/mherde/PycharmProjects/deep-active-learning-from-crowds/slurm/run_manifest_array.sbatch).
+[slurm/run_manifest_array.sbatch](slurm/run_manifest_array.sbatch).
 The script runs
-[scripts/run_manifest_row.py](/home/mherde/PycharmProjects/deep-active-learning-from-crowds/scripts/run_manifest_row.py)
+[scripts/run_manifest_row.py](scripts/run_manifest_row.py)
 and maps each SLURM array index to one manifest row through
 `SLURM_ARRAY_TASK_ID`.
 
 Generate the manifest first:
 
 ```bash
-python scripts/generate_manifest.py worker_selection_main
+python scripts/generate_manifest.py annotator_selection_main
 ```
 
 Determine the number of rows in the manifest:
 
 ```bash
-wc -l manifests/worker_selection_main.jsonl
+wc -l manifests/annotator_selection_main.jsonl
 ```
 
 Submit one SLURM task per manifest row:
 
 ```bash
-ROWS=$(wc -l < manifests/worker_selection_main.jsonl)
+ROWS=$(wc -l < manifests/annotator_selection_main.jsonl)
 sbatch --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
-  manifests/worker_selection_main.jsonl
+  manifests/annotator_selection_main.jsonl
 ```
 
 Example for a 128-row manifest:
@@ -218,7 +219,7 @@ Example for a 128-row manifest:
 ```bash
 sbatch --array=0-127 \
   slurm/run_manifest_array.sbatch \
-  manifests/worker_selection_main.jsonl
+  manifests/annotator_selection_main.jsonl
 ```
 
 An alternative Python executable can be passed as the second positional
@@ -227,7 +228,7 @@ argument:
 ```bash
 sbatch --array=0-127 \
   slurm/run_manifest_array.sbatch \
-  manifests/worker_selection_main.jsonl \
+  manifests/annotator_selection_main.jsonl \
   /path/to/python
 ```
 
