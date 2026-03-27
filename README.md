@@ -111,6 +111,22 @@ The batch entry point for preparing dataset artifacts is
 It prepares cached embeddings for the configured datasets and, where needed,
 also prepares simulated multi-annotator labels.
 
+The SLURM scripts can be configured through global environment variables
+before submission. The most important one is `DALC_REPO_ROOT`, which is used
+to resolve absolute Python entry-point paths at runtime. For SLURM-managed
+working directory and logs, you can also use the standard `SBATCH_CHDIR`,
+`SBATCH_OUTPUT`, and `SBATCH_ERROR` variables.
+
+Example:
+
+```bash
+export DALC_REPO_ROOT=/absolute/path/to/deep-active-learning-from-multiple-annotators
+export SBATCH_CHDIR="${DALC_REPO_ROOT}"
+export SBATCH_OUTPUT="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out"
+export SBATCH_ERROR="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err"
+mkdir -p "${DALC_REPO_ROOT}/slurm/logs"
+```
+
 Current array index mapping:
 
 - `0`: `dtd47`
@@ -139,14 +155,25 @@ labels.
 Submit the full array with:
 
 ```bash
-sbatch --array=0-8 slurm/prepare_datasets.sbatch
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-8 \
+  slurm/prepare_datasets.sbatch
 ```
 
 You can also pass a specific Python executable as the first positional
 argument:
 
 ```bash
-sbatch --array=0-8 slurm/prepare_datasets.sbatch /path/to/python
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-8 \
+  slurm/prepare_datasets.sbatch \
+  /path/to/python
 ```
 
 #### Without SLURM
@@ -241,7 +268,11 @@ Submit one SLURM task per manifest row:
 
 ```bash
 ROWS=$(wc -l < manifests/annotator_selection_main.jsonl)
-sbatch --array=0-$((ROWS-1)) \
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
   manifests/annotator_selection_main.jsonl
 ```
@@ -249,7 +280,11 @@ sbatch --array=0-$((ROWS-1)) \
 Example for a 128-row manifest:
 
 ```bash
-sbatch --array=0-127 \
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-127 \
   slurm/run_manifest_array.sbatch \
   manifests/annotator_selection_main.jsonl
 ```
@@ -258,15 +293,19 @@ An alternative Python executable can be passed as the second positional
 argument:
 
 ```bash
-sbatch --array=0-127 \
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-127 \
   slurm/run_manifest_array.sbatch \
   manifests/annotator_selection_main.jsonl \
   /path/to/python
 ```
 
 The default batch script requests one GPU, four CPUs, and 32 GB of memory.
-Logs are written to `slurm/logs/%x_%A_%a.out` and
-`slurm/logs/%x_%A_%a.err`.
+Provide absolute log paths via `--output` and `--error` at submission time,
+because SLURM resolves those paths before the script body starts.
 
 ### Optional MLflow Setup Step
 
@@ -292,13 +331,22 @@ The matching SLURM wrapper is
 [slurm/setup_mlflow.sbatch](slurm/setup_mlflow.sbatch):
 
 ```bash
-sbatch slurm/setup_mlflow.sbatch good_pot_bad_crop
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
+  slurm/setup_mlflow.sbatch \
+  good_pot_bad_crop
 ```
 
 You can optionally pass a custom results path and Python executable:
 
 ```bash
-sbatch slurm/setup_mlflow.sbatch \
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
+  slurm/setup_mlflow.sbatch \
   good_pot_bad_crop \
   /path/to/mlflow \
   /path/to/python
@@ -308,9 +356,16 @@ To enforce ordering, submit the run array with an `afterok` dependency on the
 setup job:
 
 ```bash
-SETUP_JOB_ID=$(sbatch --parsable slurm/setup_mlflow.sbatch good_pot_bad_crop)
+SETUP_JOB_ID=$(sbatch --parsable \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
+  slurm/setup_mlflow.sbatch good_pot_bad_crop)
 ROWS=$(wc -l < manifests/good_pot_bad_crop.jsonl)
 sbatch --dependency=afterok:${SETUP_JOB_ID} \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
   --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
   manifests/good_pot_bad_crop.jsonl
