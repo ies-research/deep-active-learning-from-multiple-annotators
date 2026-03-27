@@ -9,6 +9,13 @@ def infer_label_values(
 ) -> list[Any]:
     names = getattr(feature, "names", None)
     if names is not None:
+        values = []
+        for seq in label_sequences:
+            values.extend(_to_scalar(v) for v in seq)
+
+        if values and all(isinstance(v, Number) and not isinstance(v, bool) for v in values):
+            return list(range(len(names)))
+
         return [_to_scalar(name) for name in names]
 
     values = []
