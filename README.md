@@ -15,11 +15,33 @@ conda env create -f environment.yml
 conda activate dalc
 ```
 
-The committed [environment.yml](environment.yml) is based on the current
-`dalc` environment and is the main entry point for reproducible setup on
-other machines. It reflects the current Linux/GPU-oriented setup fairly
-closely, so users on different CUDA stacks may need to adjust some GPU
-packages.
+Environment files:
+
+- [environment.yml](environment.yml): lean runtime environment for running
+  experiments and preparation scripts
+- [environment.gpu.yml](environment.gpu.yml): GPU-oriented runtime environment
+  with a more opinionated model stack for accelerator-backed runs
+- [environment.dev.yml](environment.dev.yml): contributor-oriented environment
+  with tests, linting, notebook tooling, and documentation packages
+
+For GPU-oriented training runs:
+
+```bash
+conda env create -f environment.gpu.yml
+conda activate dalc-gpu
+```
+
+For development work:
+
+```bash
+conda env create -f environment.dev.yml
+conda activate dalc-dev
+```
+
+The runtime environment is intentionally kept lean and focused on the
+dependencies that are directly used in the current codebase. The remaining
+PyTorch stack still reflects a Linux/GPU-oriented setup fairly closely, so
+users on different CUDA stacks may need to adjust some GPU packages.
 
 Default paths are defined in
 [configs/paths/default.yaml](configs/paths/default.yaml):

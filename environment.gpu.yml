@@ -1,4 +1,4 @@
-name: dalc
+name: dalc-gpu
 channels:
   - defaults
   - conda-forge
@@ -13,14 +13,17 @@ dependencies:
       - datasets==4.3.0
       - hydra-core==1.3.2
       - huggingface-hub==0.35.1
+      - kornia==0.8.1
       - mlflow==3.9.0
       - numpy==2.4.0
+      - onnxruntime-gpu==1.22.0
       - pandas==2.2.3
       - pillow==11.3.0
       - resampy==0.4.3
       - scikit-activeml==1.0.0
       - scikit-learn==1.7.1
       - scipy==1.16.1
+      - sentence-transformers==5.1.1
       - skorch==1.2.0
       - soundfile==0.13.1
       - torch==2.7.1

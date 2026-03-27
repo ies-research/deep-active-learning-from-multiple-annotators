@@ -1,4 +1,4 @@
-name: dalc
+name: dalc-dev
 channels:
   - defaults
   - conda-forge
@@ -10,20 +10,38 @@ dependencies:
   - tesseract
   - pip:
       - accelerate==1.10.1
+      - black==25.12.0
+      - build==1.3.0
       - datasets==4.3.0
+      - flake8==7.3.0
       - hydra-core==1.3.2
       - huggingface-hub==0.35.1
+      - jupyter==1.1.1
+      - jupyter-ui-poll==1.1.0
       - mlflow==3.9.0
+      - nbsphinx==0.9.7
       - numpy==2.4.0
       - pandas==2.2.3
       - pillow==11.3.0
+      - pre_commit==4.4.0
+      - pytest==8.4.2
+      - pytest-cov==7.0.0
+      - pytest-xdist==3.8.0
+      - readme_renderer==44.0
       - resampy==0.4.3
       - scikit-activeml==1.0.0
       - scikit-learn==1.7.1
       - scipy==1.16.1
       - skorch==1.2.0
       - soundfile==0.13.1
+      - Sphinx==8.1.3
+      - sphinx-copybutton==0.5.2
+      - sphinx-gallery==0.19.0
+      - sphinx-last-updated-by-git==0.3.8
+      - sphinx-sitemap==2.9.0
+      - sphinxcontrib-bibtex==2.6.5
       - torch==2.7.1
       - torchaudio==2.7.1
       - torchvision==0.22.1
       - transformers==4.56.2
+      - twine==6.2.0
