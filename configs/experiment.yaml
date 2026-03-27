@@ -1,6 +1,6 @@
 defaults:
   - al: dopanim
-  - classifier: crowd_em
+  - classifier: annot_mix_gating
   - paths: default
   - dataset: dopanim
   - embedder@classification_embedder: dinov2
@@ -10,10 +10,10 @@ defaults:
   - module: mlp
   - training: default
   - scheduler: step_ratio_1
-  - sample@sample.init: typi_clust
+  - sample@sample.init: random
   - sample@sample.actual: random
   - scorer@scorer.init: random
-  - scorer@scorer.actual: random
+  - scorer@scorer.actual: performance
   - assigner@assigner.init: quota_sample
   - assigner@assigner.actual: greedy_sample
   - override hydra/hydra_logging: disabled

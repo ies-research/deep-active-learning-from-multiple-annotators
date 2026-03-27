@@ -1,11 +1,11 @@
 defaults:
-  - profile@_here_: hard
+  - profile@_here_: trec6
   - _self_
 
 _target_: src.dataset.MultiAnnotatorSimConfig
 
 seed: 6
-n_annotators: 20
+n_annotators: 10
 allocation: deterministic
 missing_rate: 0.0
 missing_value: -1

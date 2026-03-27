@@ -1,0 +1,156 @@
+{
+  "name": "good_pot_bad_crop",
+  "description": "Benchmark across selected datasets, classifier variants, and scorer-assigner pairings",
+  "common_overrides": [
+    "experiment_name=good_pot_bad_crop"
+  ],
+  "exclude": [
+    {
+      "classifier": "majority_voting",
+      "pairing": [
+        "performance_greedy_sample",
+        "performance_epsilon_greedy_sample_0_05",
+        "performance_epsilon_greedy_sample_0_1"
+      ]
+    }
+  ],
+  "axes": [
+    {
+      "name": "dataset",
+      "type": "choices",
+      "values": {
+        "letter26": {
+          "overrides": [
+            "dataset=letter26",
+            "simulation=letter26",
+            "al=letter26",
+            "embedder@classification_embedder=identity_tabular",
+            "embedder@simulation_embedder=identity_tabular"
+          ]
+        },
+        "trec6": {
+          "overrides": [
+            "dataset=trec6",
+            "simulation=trec6",
+            "al=trec6",
+            "embedder@classification_embedder=bert",
+            "embedder@simulation_embedder=bert"
+          ]
+        },
+        "dopanim": {
+          "overrides": [
+            "dataset=dopanim",
+            "simulation=null",
+            "al=dopanim",
+            "embedder@classification_embedder=dinov2",
+            "embedder@simulation_embedder=null"
+          ]
+        }
+      }
+    },
+    {
+      "name": "classifier",
+      "type": "choices",
+      "values": {
+        "annot_mix_gating_0_01": {
+          "overrides": [
+            "classifier=annot_mix_gating",
+            "training=default",
+            "classifier.sample_gate_init_prob=0.01"
+          ]
+        },
+        "annot_mix_gating_0_1": {
+          "overrides": [
+            "classifier=annot_mix_gating",
+            "training=default",
+            "classifier.sample_gate_init_prob=0.1"
+          ]
+        },
+        "annot_mix_gating_0_9": {
+          "overrides": [
+            "classifier=annot_mix_gating",
+            "training=default",
+            "classifier.sample_gate_init_prob=0.9"
+          ]
+        },
+        "annot_mix_gating_0_99": {
+          "overrides": [
+            "classifier=annot_mix_gating",
+            "training=default",
+            "classifier.sample_gate_init_prob=0.99"
+          ]
+        },
+        "annot_mix_8": {
+          "overrides": [
+            "classifier=annot_mix",
+            "training=default",
+            "classifier.sample_embed_dim=8",
+            "classifier.annotator_embed_dim=8"
+          ]
+        },
+        "annot_mix_16": {
+          "overrides": [
+            "classifier=annot_mix",
+            "training=default",
+            "classifier.sample_embed_dim=16",
+            "classifier.annotator_embed_dim=16"
+          ]
+        },
+        "annot_mix_32": {
+          "overrides": [
+            "classifier=annot_mix",
+            "training=default",
+            "classifier.sample_embed_dim=32",
+            "classifier.annotator_embed_dim=32"
+          ]
+        },
+        "crowd_em": {
+          "overrides": [
+            "classifier=crowd_em",
+            "training=crowd_em"
+          ]
+        },
+        "majority_voting": {
+          "overrides": [
+            "classifier=majority_voting",
+            "training=default"
+          ]
+        }
+      }
+    },
+    {
+      "name": "pairing",
+      "type": "choices",
+      "values": {
+        "random_quota_sample": {
+          "overrides": [
+            "scorer@scorer.actual=random",
+            "assigner@assigner.actual=quota_sample"
+          ]
+        },
+        "performance_greedy_sample": {
+          "overrides": [
+            "scorer@scorer.actual=performance",
+            "assigner@assigner.actual=greedy_sample"
+          ]
+        },
+        "performance_epsilon_greedy_sample_0_05": {
+          "overrides": [
+            "scorer@scorer.actual=performance",
+            "assigner@assigner.actual=epsilon_greedy_sample",
+            "assigner.actual.epsilon_min=0.05",
+            "assigner.actual.epsilon_max=0.05"
+          ]
+        },
+        "performance_epsilon_greedy_sample_0_1": {
+          "overrides": [
+            "scorer@scorer.actual=performance",
+            "assigner@assigner.actual=epsilon_greedy_sample",
+            "assigner.actual.epsilon_min=0.1",
+            "assigner.actual.epsilon_max=0.1"
+          ]
+        }
+      }
+    }
+  ]
+}

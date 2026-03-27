@@ -1,0 +1,6 @@
+_target_: src.embedder.TorchHFTextEmbedder
+model_id: google-bert/bert-base-uncased
+cache_dir: ${paths.embedder_cache_dir}
+pooling: mean
+dtype: float32
+device: null

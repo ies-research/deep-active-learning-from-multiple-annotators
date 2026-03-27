@@ -1,7 +1,7 @@
 _target_: skactiveml.classifier.multiannotator.AnnotMixClassifier
 _convert_: all
 alpha: 0.5
-sample_embed_dim: 1
+sample_embed_dim: 32
 annotator_embed_dim: 32
 hidden_dim: 128
 n_hidden_layers: 1

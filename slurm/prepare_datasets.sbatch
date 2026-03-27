@@ -23,60 +23,30 @@ source /home/mherde/miniconda3/bin/activate dalc
 PYTHON_BIN="${1:-python}"
 
 DATASETS=(
-  "dtd47"
-  "dermamnist7"
-  "food101"
-  "audiomnist10"
-  "skits2i14"
-  "banking77"
   "trec6"
   "letter26"
   "dopanim"
 )
 
 CLASSIFICATION_EMBEDDERS=(
-  "clip"
-  "dinov2"
-  "dinov2"
-  "wav2vec"
-  "wav2vec"
-  "minilmv2"
-  "minilmv2"
+  "bert"
   "identity_tabular"
   "dinov2"
 )
 
 SIMULATION_EMBEDDERS=(
-  "dinov2"
-  "clip"
-  "clip"
-  "wavlm"
-  "wavlm"
-  "mpnetv2"
-  "mpnetv2"
+  "bert"
   "identity_tabular"
   "null"
 )
 
 SIMULATION_CONFIGS=(
-  "dtd47"
-  "dermamnist7"
-  "food101"
-  "audiomnist10"
-  "skits2i14"
-  "banking77"
   "trec6"
   "letter26"
   "null"
 )
 
 PREP_STEPS=(
-  "none"
-  "none"
-  "none"
-  "none"
-  "none"
-  "none"
   "none"
   "none"
   "prepare_dopanim"
