@@ -291,7 +291,11 @@ def _resolve_under_original_cwd(path: PathLike) -> Path:
     """Resolve a path relative to Hydra's original working directory."""
     p = Path(path).expanduser()
     if not p.is_absolute():
-        p = Path(get_original_cwd()) / p
+        try:
+            base_dir = Path(get_original_cwd())
+        except Exception:
+            base_dir = Path.cwd()
+        p = base_dir / p
     return p.resolve()
 
 

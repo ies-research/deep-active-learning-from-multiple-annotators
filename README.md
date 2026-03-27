@@ -236,6 +236,56 @@ The default batch script requests one GPU, four CPUs, and 32 GB of memory.
 Logs are written to `slurm/logs/%x_%A_%a.out` and
 `slurm/logs/%x_%A_%a.err`.
 
+### Optional MLflow Setup Step
+
+Runs already create the SQLite backend and experiment lazily when logging
+starts, but for larger SLURM sweeps it can be useful to pre-create the MLflow
+database and experiment once before launching the array. This avoids a
+"first writer wins" race on a fresh backend and makes the artifact location
+explicit up front.
+
+The helper script is [scripts/setup_mlflow.py](scripts/setup_mlflow.py). It
+uses the same settings as training runs: `results_path` is used both as the
+SQLite backend location and as the experiment artifact root.
+
+Prepare an experiment locally:
+
+```bash
+source /home/mherde/miniconda3/bin/activate dalc
+python scripts/setup_mlflow.py \
+  --experiment-name good_pot_bad_crop \
+  --results-path mlflow
+```
+
+The matching SLURM wrapper is
+[slurm/setup_mlflow.sbatch](slurm/setup_mlflow.sbatch):
+
+```bash
+source /home/mherde/miniconda3/bin/activate dalc
+sbatch slurm/setup_mlflow.sbatch good_pot_bad_crop
+```
+
+You can optionally pass a custom results path and Python executable:
+
+```bash
+sbatch slurm/setup_mlflow.sbatch \
+  good_pot_bad_crop \
+  /path/to/mlflow \
+  /path/to/python
+```
+
+To enforce ordering, submit the run array with an `afterok` dependency on the
+setup job:
+
+```bash
+SETUP_JOB_ID=$(sbatch --parsable slurm/setup_mlflow.sbatch good_pot_bad_crop)
+ROWS=$(wc -l < manifests/good_pot_bad_crop.jsonl)
+sbatch --dependency=afterok:${SETUP_JOB_ID} \
+  --array=0-$((ROWS-1)) \
+  slurm/run_manifest_array.sbatch \
+  manifests/good_pot_bad_crop.jsonl
+```
+
 ### Method Schema
 
 Each method file is a JSON object with:
