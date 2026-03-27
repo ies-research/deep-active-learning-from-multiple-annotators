@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from src.utils._mlflow import (
 
 
 def _default_results_path() -> str:
+    env_results_root = os.environ.get(
+        "DALC_RESULTS_ROOT", os.environ.get("DALCE_RESULTS_ROOT")
+    )
+    if env_results_root:
+        return str(_resolve_under_original_cwd(Path(env_results_root) / "mlflow"))
     with initialize_config_dir(
         version_base=None, config_dir=str(REPO_ROOT / "configs")
     ):

@@ -17,6 +17,7 @@ cd "${REPO_ROOT}"
 EXPERIMENT_NAME="$1"
 RESULTS_PATH="${2:-}"
 PYTHON_BIN="${3:-python}"
+RESULTS_ROOT="${DALC_RESULTS_ROOT:-${DALCE_RESULTS_ROOT:-}}"
 
 if [[ $# -lt 3 ]]; then
   if [[ -n "${CONDA_BASE:-}" ]]; then
@@ -37,6 +38,8 @@ CMD=(
 
 if [[ -n "${RESULTS_PATH}" ]]; then
   CMD+=(--results-path "${RESULTS_PATH}")
+elif [[ -n "${RESULTS_ROOT}" ]]; then
+  CMD+=(--results-path "${RESULTS_ROOT}/mlflow")
 fi
 
 "${CMD[@]}"

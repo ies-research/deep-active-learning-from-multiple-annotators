@@ -54,6 +54,11 @@ Default paths are defined in
 - `paths.multi_annotator_cache_dir=${paths.master_dir}/.hf_multi_annotator_cache`
 - `results_path=${paths.results_dir}/mlflow`
 
+The helper scripts also respect environment overrides:
+
+- `DALC_DATA_ROOT`: overrides `paths.master_dir` for dataset preparation helpers
+- `DALC_RESULTS_ROOT`: overrides `paths.results_dir` for MLflow setup and SLURM launch helpers
+
 ## Dataset Preparation
 
 ### `dopanim`
@@ -70,13 +75,13 @@ python scripts/prepare_dopanim.py --variant full
 
 With the current path settings, the script defaults are:
 
-- `--data-root /home/datasets`
-- `--raw-dir /home/datasets/raw/dopanim`
-- `--output-dir /home/datasets/dopanim_<variant>`
+- `--data-root`: `DALC_DATA_ROOT` when set, otherwise `paths.master_dir`
+- `--raw-dir`: `<data-root>/raw/dopanim`
+- `--output-dir`: `<data-root>/dopanim_<variant>`
 
 That means `--variant full` writes the processed dataset to
-`/home/datasets/dopanim_full`, which matches
-[configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml).
+`<data-root>/dopanim_full`, which should match the dataset source configured
+in [configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml).
 
 Available parameters:
 
@@ -92,7 +97,7 @@ Example with explicit paths:
 ```bash
 conda activate dalc
 python scripts/prepare_dopanim.py \
-  --data-root /home/datasets \
+  --data-root /path/to/data/root \
   --variant full \
   --force-rebuild
 ```

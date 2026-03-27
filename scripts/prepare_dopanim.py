@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import sys
 import urllib.request
 import zipfile
 from pathlib import Path
 
 import numpy as np
 from datasets import ClassLabel, Dataset, DatasetDict, Features, Image, Sequence, Value
+from hydra import compose, initialize_config_dir
 
 
 DOPANIM_URL = "https://zenodo.org/api/records/14016659/files-archive"
@@ -70,8 +73,29 @@ SUPPORTED_VARIANTS = (
     "rand-4",
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
+def _resolve_default_data_root() -> Path:
+    env_data_root = os.environ.get("DALC_DATA_ROOT")
+    if env_data_root:
+        return Path(env_data_root).expanduser().resolve()
+
+    with initialize_config_dir(
+        version_base=None, config_dir=str(REPO_ROOT / "configs")
+    ):
+        cfg = compose(config_name="experiment")
+
+    data_root = Path(str(cfg.paths.master_dir)).expanduser()
+    if not data_root.is_absolute():
+        data_root = (Path.cwd() / data_root).resolve()
+    return data_root
+
 
 def parse_args() -> argparse.Namespace:
+    default_data_root = _resolve_default_data_root()
     parser = argparse.ArgumentParser(
         description=(
             "Download the DOPAnim Zenodo archive, convert it into a local "
@@ -81,8 +105,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("/home/datasets"),
-        help="Base directory for raw and processed dataset artifacts.",
+        default=default_data_root,
+        help=(
+            "Base directory for raw and processed dataset artifacts. Defaults "
+            "to DALC_DATA_ROOT when set, otherwise to the resolved "
+            "`paths.master_dir` from the Hydra config."
+        ),
     )
     parser.add_argument(
         "--raw-dir",

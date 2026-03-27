@@ -15,6 +15,9 @@ cd "${REPO_ROOT}"
 
 mkdir -p slurm/logs
 
+DATA_ROOT="${DALC_DATA_ROOT:-}"
+RESULTS_ROOT="${DALC_RESULTS_ROOT:-${DALCE_RESULTS_ROOT:-}}"
+
 PYTHON_BIN="${1:-python}"
 
 if [[ $# -lt 1 ]]; then
@@ -75,7 +78,14 @@ PREP_STEP="${PREP_STEPS[TASK_INDEX]}"
 
 if [[ "${PREP_STEP}" == "prepare_dopanim" ]]; then
   echo ">>> Preparing raw ${DATASET} dataset"
-  "${PYTHON_BIN}" "${REPO_ROOT}/scripts/prepare_dopanim.py" --variant full
+  PREP_CMD=(
+    "${PYTHON_BIN}" "${REPO_ROOT}/scripts/prepare_dopanim.py"
+    --variant full
+  )
+  if [[ -n "${DATA_ROOT}" ]]; then
+    PREP_CMD+=(--data-root "${DATA_ROOT}")
+  fi
+  "${PREP_CMD[@]}"
 fi
 
 echo ">>> Preparing ${DATASET} (classification=${CLASSIFICATION_EMBEDDER}, simulation=${SIMULATION_CONFIG})"
@@ -86,6 +96,14 @@ CMD=(
   "embedder@classification_embedder=${CLASSIFICATION_EMBEDDER}"
   "exit_after_simulation=True"
 )
+
+if [[ -n "${DATA_ROOT}" ]]; then
+  CMD+=("paths.master_dir=${DATA_ROOT}")
+fi
+
+if [[ -n "${RESULTS_ROOT}" ]]; then
+  CMD+=("paths.results_dir=${RESULTS_ROOT}")
+fi
 
 if [[ "${SIMULATION_CONFIG}" == "null" ]]; then
   CMD+=("~simulation")
