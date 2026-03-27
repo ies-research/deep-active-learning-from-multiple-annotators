@@ -41,6 +41,15 @@ def main():
         help="Path to the experiment driver.",
     )
     parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help=(
+            "Additional Hydra override appended after the manifest row. "
+            "Can be passed multiple times."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the command without executing it.",
@@ -55,7 +64,12 @@ def main():
         row_index = int(task_id)
 
     row = _load_manifest_row(args.manifest, row_index)
-    cmd = [args.python, args.experiment_script, *row["hydra_overrides"]]
+    cmd = [
+        args.python,
+        args.experiment_script,
+        *row["hydra_overrides"],
+        *args.override,
+    ]
 
     print(f"Running manifest row {row_index}: {row['run_id']}")
     print("Command:", " ".join(cmd))
