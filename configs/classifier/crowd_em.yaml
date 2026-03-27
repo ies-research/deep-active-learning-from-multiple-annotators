@@ -1,7 +1,7 @@
 _target_: src.classifier.CrowdEMClassifier
 _convert_: all
 max_iter: 10
-tol: 1e-3
+tol: 1e-4
 annot_prior_full: 1.0
 annot_prior_diag: 0.0
 warm_start_m_step: true

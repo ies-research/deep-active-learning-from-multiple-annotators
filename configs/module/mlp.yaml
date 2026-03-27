@@ -1,6 +1,6 @@
 clf_module: src.module.MultiLayerPerceptron
-module__hidden_units: [128]
-module__dropout: 0.1
+module__hidden_units: [256, 128]
+module__dropout: 0.25
 module__use_batchnorm: True
 module__activation: "gelu"
 module__bias: True
