@@ -20,9 +20,16 @@ mkdir -p slurm/logs
 source /home/mherde/miniconda3/bin/activate dalc
 
 EXPERIMENT_NAME="$1"
-RESULTS_PATH="${2:-mlflow}"
+RESULTS_PATH="${2:-}"
 PYTHON_BIN="${3:-python}"
 
-"${PYTHON_BIN}" scripts/setup_mlflow.py \
-  --experiment-name "${EXPERIMENT_NAME}" \
-  --results-path "${RESULTS_PATH}"
+CMD=(
+  "${PYTHON_BIN}" scripts/setup_mlflow.py
+  --experiment-name "${EXPERIMENT_NAME}"
+)
+
+if [[ -n "${RESULTS_PATH}" ]]; then
+  CMD+=(--results-path "${RESULTS_PATH}")
+fi
+
+"${CMD[@]}"

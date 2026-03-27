@@ -1,8 +1,9 @@
 master_dir: /home/datasets
+results_dir: /home/results
 
 dataset_cache_dir: ${paths.master_dir}
 embedder_cache_dir: ${paths.master_dir}/.hf_embedders
 pipeline_cache_dir: ${paths.master_dir}/.hf_embed_cache
 multi_annotator_cache_dir: ${paths.master_dir}/.hf_multi_annotator_cache
 
-results_path: mlflow
+results_path: ${paths.results_dir}/mlflow

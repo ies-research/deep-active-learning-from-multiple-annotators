@@ -18,10 +18,12 @@ Default paths are defined in
 [configs/paths/default.yaml](configs/paths/default.yaml):
 
 - `paths.master_dir=/home/datasets`
+- `paths.results_dir=/home/results`
 - `paths.dataset_cache_dir=${paths.master_dir}`
 - `paths.embedder_cache_dir=${paths.master_dir}/.hf_embedders`
 - `paths.pipeline_cache_dir=${paths.master_dir}/.hf_embed_cache`
 - `paths.multi_annotator_cache_dir=${paths.master_dir}/.hf_multi_annotator_cache`
+- `results_path=${paths.results_dir}/mlflow`
 
 ## Dataset Preparation
 
@@ -253,8 +255,7 @@ Prepare an experiment locally:
 ```bash
 source /home/mherde/miniconda3/bin/activate dalc
 python scripts/setup_mlflow.py \
-  --experiment-name good_pot_bad_crop \
-  --results-path mlflow
+  --experiment-name good_pot_bad_crop
 ```
 
 The matching SLURM wrapper is
