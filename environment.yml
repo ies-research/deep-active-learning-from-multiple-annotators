@@ -1,0 +1,29 @@
+name: dalc
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - pandoc
+  - tesseract
+  - pip:
+      - accelerate==1.10.1
+      - datasets==4.3.0
+      - hydra-core==1.3.2
+      - huggingface-hub==0.35.1
+      - mlflow==3.9.0
+      - numpy==2.4.0
+      - pandas==2.2.3
+      - pillow==11.3.0
+      - resampy==0.4.3
+      - scikit-activeml==1.0.0
+      - scikit-learn==1.7.1
+      - scipy==1.16.1
+      - skorch==1.2.0
+      - soundfile==0.13.1
+      - torch==2.7.1
+      - torchaudio==2.7.1
+      - torchvision==0.22.1
+      - transformers==4.56.2

@@ -7,12 +7,41 @@ launching runs.
 
 ## Environment
 
-Activate the project environment before running data preparation or
-experiments:
+Create and activate the project environment before running data preparation
+or experiments:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
+conda env create -f environment.yml
+conda activate dalc
 ```
+
+Environment files:
+
+- [environment.yml](environment.yml): lean runtime environment for running
+  experiments and preparation scripts
+- [environment.gpu.yml](environment.gpu.yml): GPU-oriented runtime environment
+  with a more opinionated model stack for accelerator-backed runs
+- [environment.dev.yml](environment.dev.yml): contributor-oriented environment
+  with tests, linting, notebook tooling, and documentation packages
+
+For GPU-oriented training runs:
+
+```bash
+conda env create -f environment.gpu.yml
+conda activate dalc-gpu
+```
+
+For development work:
+
+```bash
+conda env create -f environment.dev.yml
+conda activate dalc-dev
+```
+
+The runtime environment is intentionally kept lean and focused on the
+dependencies that are directly used in the current codebase. The remaining
+PyTorch stack still reflects a Linux/GPU-oriented setup fairly closely, so
+users on different CUDA stacks may need to adjust some GPU packages.
 
 Default paths are defined in
 [configs/paths/default.yaml](configs/paths/default.yaml):
@@ -35,7 +64,7 @@ The repository can use `dopanim` as a local Hugging Face `DatasetDict` via
 Prepare the default `full` variant with:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
+conda activate dalc
 python scripts/prepare_dopanim.py --variant full
 ```
 
@@ -61,7 +90,7 @@ Available parameters:
 Example with explicit paths:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
+conda activate dalc
 python scripts/prepare_dopanim.py \
   --data-root /home/datasets \
   --variant full \
@@ -110,7 +139,6 @@ labels.
 Submit the full array with:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
 sbatch --array=0-8 slurm/prepare_datasets.sbatch
 ```
 
@@ -126,24 +154,26 @@ sbatch --array=0-8 slurm/prepare_datasets.sbatch /path/to/python
 The script can also be executed as a plain shell script by setting
 `SLURM_ARRAY_TASK_ID` manually.
 
+By default, the SLURM helper scripts activate `conda` environment `dalc`.
+If your `conda` installation is not already available in the job shell, set
+`CONDA_BASE=/path/to/miniconda3`. To use a different environment name, set
+`CONDA_ENV_NAME`.
+
 Run one dataset locally, for example `dopanim` (`SLURM_ARRAY_TASK_ID=8`):
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
 SLURM_ARRAY_TASK_ID=8 bash slurm/prepare_datasets.sbatch
 ```
 
 Run one dataset with a custom Python executable:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
 SLURM_ARRAY_TASK_ID=8 bash slurm/prepare_datasets.sbatch /path/to/python
 ```
 
 Run the full preparation sequence locally:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
 for i in {0..8}; do
   SLURM_ARRAY_TASK_ID=$i bash slurm/prepare_datasets.sbatch
 done
@@ -253,7 +283,7 @@ SQLite backend location and as the experiment artifact root.
 Prepare an experiment locally:
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
+conda activate dalc
 python scripts/setup_mlflow.py \
   --experiment-name good_pot_bad_crop
 ```
@@ -262,7 +292,6 @@ The matching SLURM wrapper is
 [slurm/setup_mlflow.sbatch](slurm/setup_mlflow.sbatch):
 
 ```bash
-source /home/mherde/miniconda3/bin/activate dalc
 sbatch slurm/setup_mlflow.sbatch good_pot_bad_crop
 ```
 

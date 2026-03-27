@@ -17,11 +17,21 @@ cd "${REPO_ROOT}"
 
 mkdir -p slurm/logs
 
-source /home/mherde/miniconda3/bin/activate dalc
-
 EXPERIMENT_NAME="$1"
 RESULTS_PATH="${2:-}"
 PYTHON_BIN="${3:-python}"
+
+if [[ $# -lt 3 ]]; then
+  if [[ -n "${CONDA_BASE:-}" ]]; then
+    source "${CONDA_BASE}/etc/profile.d/conda.sh"
+  elif command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+  else
+    echo "Could not find conda. Set CONDA_BASE or pass an explicit Python executable." >&2
+    exit 1
+  fi
+  conda activate "${CONDA_ENV_NAME:-dalc}"
+fi
 
 CMD=(
   "${PYTHON_BIN}" scripts/setup_mlflow.py
