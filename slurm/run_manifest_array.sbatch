@@ -17,6 +17,8 @@ mkdir -p slurm/logs
 
 MANIFEST_PATH="$1"
 PYTHON_BIN="${2:-python}"
+DATA_ROOT="${DALC_DATA_ROOT:-}"
+RESULTS_ROOT="${DALC_RESULTS_ROOT:-${DALCE_RESULTS_ROOT:-}}"
 
 if [[ $# -lt 2 ]]; then
   if [[ -n "${CONDA_BASE:-}" ]]; then
@@ -30,6 +32,18 @@ if [[ $# -lt 2 ]]; then
   conda activate "${CONDA_ENV_NAME:-dalc}"
 fi
 
-"${PYTHON_BIN}" "${REPO_ROOT}/scripts/run_manifest_row.py" \
-  --manifest "${MANIFEST_PATH}" \
+CMD=(
+  "${PYTHON_BIN}" "${REPO_ROOT}/scripts/run_manifest_row.py"
+  --manifest "${MANIFEST_PATH}"
   --row "${SLURM_ARRAY_TASK_ID}"
+)
+
+if [[ -n "${DATA_ROOT}" ]]; then
+  CMD+=(--override "paths.master_dir=${DATA_ROOT}")
+fi
+
+if [[ -n "${RESULTS_ROOT}" ]]; then
+  CMD+=(--override "paths.results_dir=${RESULTS_ROOT}")
+fi
+
+"${CMD[@]}"

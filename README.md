@@ -56,7 +56,7 @@ Default paths are defined in
 
 The helper scripts also respect environment overrides:
 
-- `DALC_DATA_ROOT`: overrides `paths.master_dir` for dataset preparation helpers
+- `DALC_DATA_ROOT`: overrides `paths.master_dir` for dataset preparation and manifest-run helpers
 - `DALC_RESULTS_ROOT`: overrides `paths.results_dir` for MLflow setup and SLURM launch helpers
 
 ## Dataset Preparation
@@ -246,6 +246,16 @@ To execute a single row locally:
 python scripts/run_manifest_row.py \
   --manifest manifests/annotator_selection_main.jsonl \
   --row 0
+```
+
+You can append extra Hydra overrides after the manifest row, for example:
+
+```bash
+python scripts/run_manifest_row.py \
+  --manifest manifests/good_pot_bad_crop.jsonl \
+  --row 0 \
+  --override paths.master_dir=/path/to/data/root \
+  --override paths.results_dir=/path/to/results/root
 ```
 
 ### Launching A Manifest Via SLURM
