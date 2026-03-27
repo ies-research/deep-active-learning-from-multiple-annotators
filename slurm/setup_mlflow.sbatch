@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=setup-mlflow
-#SBATCH --output=slurm/logs/%x_%j.out
-#SBATCH --error=slurm/logs/%x_%j.err
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 
@@ -12,10 +10,9 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${DALC_REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 cd "${REPO_ROOT}"
 
-mkdir -p slurm/logs
 
 EXPERIMENT_NAME="$1"
 RESULTS_PATH="${2:-}"
@@ -34,7 +31,7 @@ if [[ $# -lt 3 ]]; then
 fi
 
 CMD=(
-  "${PYTHON_BIN}" scripts/setup_mlflow.py
+  "${PYTHON_BIN}" "${REPO_ROOT}/scripts/setup_mlflow.py"
   --experiment-name "${EXPERIMENT_NAME}"
 )
 

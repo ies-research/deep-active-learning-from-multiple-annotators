@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=dalc-manifest
-#SBATCH --output=slurm/logs/%x_%A_%a.out
-#SBATCH --error=slurm/logs/%x_%A_%a.err
-#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 
@@ -13,7 +10,7 @@ if [[ $# -lt 1 ]]; then
   exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${DALC_REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 cd "${REPO_ROOT}"
 
 mkdir -p slurm/logs
@@ -33,6 +30,6 @@ if [[ $# -lt 2 ]]; then
   conda activate "${CONDA_ENV_NAME:-dalc}"
 fi
 
-"${PYTHON_BIN}" scripts/run_manifest_row.py \
+"${PYTHON_BIN}" "${REPO_ROOT}/scripts/run_manifest_row.py" \
   --manifest "${MANIFEST_PATH}" \
   --row "${SLURM_ARRAY_TASK_ID}"

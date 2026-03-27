@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=prepare-dataset-artifacts
-#SBATCH --output=slurm/logs/%x_%A_%a.out
-#SBATCH --error=slurm/logs/%x_%A_%a.err
-#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 
@@ -13,7 +10,7 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
   exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="${DALC_REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 cd "${REPO_ROOT}"
 
 mkdir -p slurm/logs
@@ -108,13 +105,13 @@ PREP_STEP="${PREP_STEPS[TASK_INDEX]}"
 
 if [[ "${PREP_STEP}" == "prepare_dopanim" ]]; then
   echo ">>> Preparing raw ${DATASET} dataset"
-  "${PYTHON_BIN}" scripts/prepare_dopanim.py --variant full
+  "${PYTHON_BIN}" "${REPO_ROOT}/scripts/prepare_dopanim.py" --variant full
 fi
 
 echo ">>> Preparing ${DATASET} (classification=${CLASSIFICATION_EMBEDDER}, simulation=${SIMULATION_CONFIG})"
 
 CMD=(
-  "${PYTHON_BIN}" scripts/experiment.py
+  "${PYTHON_BIN}" "${REPO_ROOT}/scripts/experiment.py"
   "dataset=${DATASET}"
   "embedder@classification_embedder=${CLASSIFICATION_EMBEDDER}"
   "exit_after_simulation=True"
