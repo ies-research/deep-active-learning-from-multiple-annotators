@@ -1,0 +1,6 @@
+_target_: src.classifier.DALCLikeClassifier
+_convert_: all
+annotator_embed_dim: 16
+sample_projection_bias: false
+annotator_bias: false
+sample_dtype: float32

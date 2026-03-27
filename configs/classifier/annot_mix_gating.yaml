@@ -1,0 +1,12 @@
+_target_: src.classifier.AnnotMixClassifier
+_convert_: all
+alpha: 0.5
+sample_embed_dim: auto
+annotator_embed_dim: auto
+hidden_dim: null
+n_hidden_layers: 2
+hidden_dropout: 0.0
+sample_gate_init_prob: 0.05
+sample_gate_weight_std: 0.0
+eta: 0.9
+sample_dtype: float32

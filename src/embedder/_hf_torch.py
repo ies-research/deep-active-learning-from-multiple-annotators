@@ -279,7 +279,9 @@ class TorchHFTextEmbedder:
         Model weight dtype used on non-CPU devices. Outputs are always returned
         as ``np.float32``.
     max_length : int or None, default=None
-        Optional max sequence length for tokenization truncation.
+        Optional max sequence length for tokenization truncation. Required when
+        ``pooling="none"`` so token-level outputs have a stable shape across
+        batches.
     cache_dir : str or None, default=None
         Optional HuggingFace cache directory.
 
@@ -329,6 +331,20 @@ class TorchHFTextEmbedder:
             "float16": torch.float16,
             "bfloat16": torch.bfloat16,
         }
+        if self.dtype not in dtype_map:
+            raise ValueError(
+                f"Unknown dtype={self.dtype!r}. Expected one of {list(dtype_map)}."
+            )
+        if self.pooling not in {"pooler", "cls", "mean", "none"}:
+            raise ValueError(
+                f"pooling={self.pooling!r} not supported. "
+                "Use 'pooler', 'cls', 'mean', or 'none'."
+            )
+        if self.pooling == "none" and self.max_length is None:
+            raise ValueError(
+                "pooling='none' requires max_length to be set so token-level "
+                "embeddings keep a fixed shape across batches."
+            )
         self._torch = torch
         self._torch_dtype = dtype_map[self.dtype]
 
@@ -365,10 +381,14 @@ class TorchHFTextEmbedder:
         torch = self._torch
 
         with torch.no_grad():
+            padding: Union[bool, str] = True
+            if self.pooling == "none" and self.max_length is not None:
+                padding = "max_length"
+
             tok = self._tokenizer(
                 list(texts),
                 return_tensors="pt",
-                padding=True,
+                padding=padding,
                 truncation=True,
                 max_length=self.max_length,
             )
