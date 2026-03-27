@@ -121,6 +121,14 @@ class HFNumpyFeaturePipeline:
                 "files have a home."
             )
 
+    def _debug(self, message: str) -> None:
+        print(
+            "[HFNumpyFeaturePipeline] "
+            f"source={self.spec.source!r} source_kind={self.spec.source_kind} "
+            f"cache_dir={self.cfg.cache_dir!r} :: {message}",
+            flush=True,
+        )
+
     def get_arrays(self) -> Dict[str, np.ndarray]:
         """
         Load the dataset, compute or reuse embeddings, and return NumPy arrays.
@@ -130,18 +138,32 @@ class HFNumpyFeaturePipeline:
         arrays : dict[str, numpy.ndarray]
             See class docstring for keys and types.
         """
+        self._debug("get_arrays: loading datasetdict")
         ds = load_datasetdict(self.spec)
+        self._debug("get_arrays: datasetdict loaded")
         train_ds = merge_train_splits(ds, self.spec)
         test_ds = ds[self.spec.test_split]
+        self._debug(
+            f"get_arrays: train split size={len(train_ds)}, "
+            f"test split size={len(test_ds)}"
+        )
+        self._debug("get_arrays: fitting label encoder")
         self._fit_label_encoder(train_ds=train_ds, test_ds=test_ds)
+        self._debug("get_arrays: label encoder fitted")
+        self._debug("get_arrays: fitting embedder")
         self._fit_embedder(train_ds)
+        self._debug("get_arrays: embedder fitted")
 
+        self._debug("get_arrays: resolving train arrays")
         X_train, y_train, z_train = self._compute_or_load_split(
             train_ds, split_name="train"
         )
+        self._debug("get_arrays: train arrays ready")
+        self._debug("get_arrays: resolving test arrays")
         X_test, y_test, _ = self._compute_or_load_split(
             test_ds, split_name="test"
         )
+        self._debug("get_arrays: test arrays ready")
 
         out = {
             "X_train": X_train,
@@ -169,6 +191,10 @@ class HFNumpyFeaturePipeline:
         cache_root = Path(self.cfg.cache_dir) / "embeddings"
         cache_root.mkdir(parents=True, exist_ok=True)
 
+        self._debug(
+            f"_cache_paths[{split_name}]: computing spec fingerprint "
+            f"(local_signature={self.spec.local_signature})"
+        )
         payload = {
             "spec": spec_fingerprint(self.spec),
             "split": split_name,
@@ -178,6 +204,7 @@ class HFNumpyFeaturePipeline:
             "memmap_dtype": str(np.dtype(self.cfg.memmap_dtype)),
         }
         key = sha1_json(payload)
+        self._debug(f"_cache_paths[{split_name}]: key={key}")
         return (
             cache_root / f"{key}.X.npy",
             cache_root / f"{key}.meta.npz",
@@ -199,20 +226,28 @@ class HFNumpyFeaturePipeline:
             Optional in-memory array (e.g., annotator labels).
         """
         ds_fpr = getattr(split_ds, "_fingerprint", "unknown")
+        self._debug(f"_compute_or_load_split[{split_name}]: resolving cache paths")
         X_path, meta_path = self._cache_paths(
             split_name=split_name, ds_fingerprint=ds_fpr
+        )
+        self._debug(
+            f"_compute_or_load_split[{split_name}]: "
+            f"X_path={X_path} meta_path={meta_path}"
         )
 
         # Reuse cached arrays if allowed and present.
         if self.cfg.reuse_cache and X_path.exists() and meta_path.exists():
+            self._debug(f"_compute_or_load_split[{split_name}]: cache hit")
             X = np.load(X_path, mmap_mode=self.cfg.mmap_mode)
             meta = npz_load(meta_path)
             return X, meta["y"], meta.get("z")
+        self._debug(f"_compute_or_load_split[{split_name}]: cache miss")
 
         # Resample audio datasets to embedder SR (e.g., 16k for wav2vec2).
         split_ds = self._maybe_cast_audio_sampling_rate(split_ds)
 
         # Compute and stream embeddings to memmap.
+        self._debug(f"_compute_or_load_split[{split_name}]: embedding split")
         X, y, z = self._embed_split_to_memmap(split_ds, X_path)
 
         # Save small metadata (labels) separately in a compact `.npz`.
@@ -220,6 +255,7 @@ class HFNumpyFeaturePipeline:
             npz_save(meta_path, y=y)
         else:
             npz_save(meta_path, y=y, z=z)
+        self._debug(f"_compute_or_load_split[{split_name}]: wrote cache files")
 
         return X, y, z
 
@@ -447,6 +483,7 @@ class HFNumpyFeaturePipeline:
             If the embedder output shape is not constant across batches.
         """
         n = len(split_ds)
+        self._debug(f"_embed_split_to_memmap: start n={n} X_path={X_path}")
         y, z = self._extract_yz(split_ds)
         bs = int(self.cfg.batch_size)
 
@@ -468,6 +505,10 @@ class HFNumpyFeaturePipeline:
 
         X0 = np.asarray(self.embedder.embed(X_in0), dtype=np.float32)
         per_sample_shape = X0.shape[1:]  # (D,) or (T, D) or (C, H, W), etc.
+        self._debug(
+            "_embed_split_to_memmap: inferred per-sample shape="
+            f"{per_sample_shape} from first batch size={len(X0)}"
+        )
 
         # Preallocate disk-backed array: shape = (N, *per_sample_shape).
         mm = np.lib.format.open_memmap(
@@ -500,4 +541,5 @@ class HFNumpyFeaturePipeline:
             mm[start:end] = Xb.astype(mm.dtype, copy=False)
 
         mm.flush()
+        self._debug("_embed_split_to_memmap: finished writing memmap")
         return mm, y, z
