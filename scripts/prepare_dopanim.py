@@ -194,19 +194,28 @@ def prepare_raw_dataset(raw_dir: Path, *, force_download: bool) -> Path:
     extract_root = raw_dir / "extracted"
 
     if force_download:
+        print(
+            f"Force download requested; clearing archive/extracted data under {raw_dir}"
+        )
         if archive_path.exists():
             archive_path.unlink()
         if extract_root.exists():
             shutil.rmtree(extract_root)
 
-    if not archive_path.exists():
+    if archive_path.exists():
+        print(f"Reusing downloaded archive at {archive_path}")
+    else:
         download_file(DOPANIM_URL, archive_path)
 
-    if not extract_root.exists():
+    if extract_root.exists():
+        print(f"Reusing extracted raw data at {extract_root}")
+    else:
         extract_zip(archive_path, extract_root)
         extract_nested_archives(extract_root)
 
-    return locate_dataset_root(extract_root)
+    dataset_root = locate_dataset_root(extract_root)
+    print(f"Located extracted DOPAnim dataset root at {dataset_root}")
+    return dataset_root
 
 
 def load_json(path: Path) -> dict:
@@ -496,10 +505,22 @@ def main() -> None:
         args.data_root, args.variant
     )
 
+    print(f"DOPAnim variant      : {args.variant}")
+    print(f"Raw directory        : {raw_dir}")
+    print(f"Processed output dir : {output_dir}")
+
+    if output_dir.exists() and not args.force_rebuild:
+        print(
+            f"Processed dataset already exists at {output_dir}; "
+            "skipping rebuild. Use --force-rebuild to overwrite it."
+        )
+        return
+
     dataset_root = prepare_raw_dataset(
         raw_dir,
         force_download=args.force_download,
     )
+    print(f"Building DatasetDict for variant {args.variant}")
     dataset_dict = build_datasetdict(dataset_root, variant=args.variant)
     save_datasetdict(
         dataset_dict,

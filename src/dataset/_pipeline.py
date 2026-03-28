@@ -200,7 +200,6 @@ class HFNumpyFeaturePipeline:
             "split": split_name,
             "ds_fingerprint": ds_fingerprint,
             "embedder": self.embedder.fingerprint(),
-            "batch_size": self.cfg.batch_size,
             "memmap_dtype": str(np.dtype(self.cfg.memmap_dtype)),
         }
         key = sha1_json(payload)
