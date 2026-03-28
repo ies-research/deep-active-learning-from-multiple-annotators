@@ -40,6 +40,9 @@ class PipelineConfig:
         usage versus float32 and is often sufficient for embeddings.
     mmap_mode : {"r", "r+", "c"}, default="r"
         Memory-map mode used when opening cached `.npy` files.
+    verbose : bool, default=False
+        If True, emit detailed pipeline debug logs, including cache hits/misses
+        and memmap creation progress.
 
     Notes
     -----
@@ -53,6 +56,7 @@ class PipelineConfig:
     reuse_cache: bool = True
     memmap_dtype: Any = np.float16
     mmap_mode: str = "r"
+    verbose: bool = False
 
 
 class HFNumpyFeaturePipeline:
@@ -122,6 +126,8 @@ class HFNumpyFeaturePipeline:
             )
 
     def _debug(self, message: str) -> None:
+        if not self.cfg.verbose:
+            return
         print(
             "[HFNumpyFeaturePipeline] "
             f"source={self.spec.source!r} source_kind={self.spec.source_kind} "
@@ -138,6 +144,32 @@ class HFNumpyFeaturePipeline:
         arrays : dict[str, numpy.ndarray]
             See class docstring for keys and types.
         """
+        self._debug("get_arrays: checking cache-only path")
+        train_cache_paths = self._cache_paths(split_name="train")
+        test_cache_paths = self._cache_paths(split_name="test")
+        train_cached = self._load_cached_split(
+            split_name="train", cache_paths=train_cache_paths
+        )
+        test_cached = self._load_cached_split(
+            split_name="test", cache_paths=test_cache_paths
+        )
+        if train_cached is not None and test_cached is not None:
+            self._debug(
+                "get_arrays: full cache hit, skipping dataset load and "
+                "embedder fitting"
+            )
+            X_train, y_train, z_train = train_cached
+            X_test, y_test, _ = test_cached
+            out = {
+                "X_train": X_train,
+                "y_train": y_train,
+                "X_test": X_test,
+                "y_test": y_test,
+            }
+            if z_train is not None:
+                out["z_train"] = z_train
+            return out
+
         self._debug("get_arrays: loading datasetdict")
         ds = load_datasetdict(self.spec)
         self._debug("get_arrays: datasetdict loaded")
@@ -156,12 +188,16 @@ class HFNumpyFeaturePipeline:
 
         self._debug("get_arrays: resolving train arrays")
         X_train, y_train, z_train = self._compute_or_load_split(
-            train_ds, split_name="train"
+            train_ds,
+            split_name="train",
+            cache_paths=train_cache_paths,
         )
         self._debug("get_arrays: train arrays ready")
         self._debug("get_arrays: resolving test arrays")
         X_test, y_test, _ = self._compute_or_load_split(
-            test_ds, split_name="test"
+            test_ds,
+            split_name="test",
+            cache_paths=test_cache_paths,
         )
         self._debug("get_arrays: test arrays ready")
 
@@ -175,9 +211,7 @@ class HFNumpyFeaturePipeline:
             out["z_train"] = z_train
         return out
 
-    def _cache_paths(
-        self, *, split_name: str, ds_fingerprint: str
-    ) -> Tuple[Path, Path]:
+    def _cache_paths(self, *, split_name: str) -> Tuple[Path, Path]:
         """
         Compute the cache paths for ``X`` and metadata.
 
@@ -198,7 +232,6 @@ class HFNumpyFeaturePipeline:
         payload = {
             "spec": spec_fingerprint(self.spec),
             "split": split_name,
-            "ds_fingerprint": ds_fingerprint,
             "embedder": self.embedder.fingerprint(),
             "memmap_dtype": str(np.dtype(self.cfg.memmap_dtype)),
         }
@@ -209,8 +242,41 @@ class HFNumpyFeaturePipeline:
             cache_root / f"{key}.meta.npz",
         )
 
+    def _load_cached_split(
+        self, *, split_name: str, cache_paths: Tuple[Path, Path]
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+        """
+        Try to load a cached split.
+
+        Returns
+        -------
+        cached : tuple or None
+            ``(X, y, z)`` if a complete cache entry exists and cache reuse is
+            enabled, otherwise ``None``.
+        """
+        X_path, meta_path = cache_paths
+        if not self.cfg.reuse_cache:
+            self._debug(f"_load_cached_split[{split_name}]: cache reuse disabled")
+            return None
+
+        if not X_path.exists() or not meta_path.exists():
+            self._debug(
+                f"_load_cached_split[{split_name}]: incomplete cache entry "
+                f"(X_exists={X_path.exists()} meta_exists={meta_path.exists()})"
+            )
+            return None
+
+        self._debug(f"_load_cached_split[{split_name}]: cache hit")
+        X = np.load(X_path, mmap_mode=self.cfg.mmap_mode)
+        meta = npz_load(meta_path)
+        return X, meta["y"], meta.get("z")
+
     def _compute_or_load_split(
-        self, split_ds, *, split_name: str
+        self,
+        split_ds,
+        *,
+        split_name: str,
+        cache_paths: Optional[Tuple[Path, Path]] = None,
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """
         Load a split from cache or compute it and write to cache.
@@ -224,22 +290,21 @@ class HFNumpyFeaturePipeline:
         z : numpy.ndarray or None
             Optional in-memory array (e.g., annotator labels).
         """
-        ds_fpr = getattr(split_ds, "_fingerprint", "unknown")
         self._debug(f"_compute_or_load_split[{split_name}]: resolving cache paths")
-        X_path, meta_path = self._cache_paths(
-            split_name=split_name, ds_fingerprint=ds_fpr
-        )
+        if cache_paths is None:
+            cache_paths = self._cache_paths(split_name=split_name)
+        X_path, meta_path = cache_paths
         self._debug(
             f"_compute_or_load_split[{split_name}]: "
             f"X_path={X_path} meta_path={meta_path}"
         )
 
         # Reuse cached arrays if allowed and present.
-        if self.cfg.reuse_cache and X_path.exists() and meta_path.exists():
-            self._debug(f"_compute_or_load_split[{split_name}]: cache hit")
-            X = np.load(X_path, mmap_mode=self.cfg.mmap_mode)
-            meta = npz_load(meta_path)
-            return X, meta["y"], meta.get("z")
+        cached = self._load_cached_split(
+            split_name=split_name, cache_paths=(X_path, meta_path)
+        )
+        if cached is not None:
+            return cached
         self._debug(f"_compute_or_load_split[{split_name}]: cache miss")
 
         # Resample audio datasets to embedder SR (e.g., 16k for wav2vec2).

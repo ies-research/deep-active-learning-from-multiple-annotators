@@ -3,3 +3,4 @@ batch_size: 64
 cache_dir: ${paths.pipeline_cache_dir}
 memmap_dtype: float32
 mmap_mode: r
+verbose: true
