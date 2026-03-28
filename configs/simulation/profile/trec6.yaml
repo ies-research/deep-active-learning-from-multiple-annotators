@@ -1,8 +1,8 @@
 types:
   - _target_: src.dataset.AnnotatorTypeConfig
     name: expert
-    proportion: 0.2
-    q_mean: 0.80
+    proportion: 0.20
+    q_mean: 0.95
     q_std: 0.03
     s_mean: 120
     s_std: 0.18
@@ -13,8 +13,8 @@ types:
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: competent
-    proportion: 0.4
-    q_mean: 0.65
+    proportion: 0.40
+    q_mean: 0.85
     q_std: 0.05
     s_mean: 70
     s_std: 0.25
@@ -26,7 +26,7 @@ types:
   - _target_: src.dataset.AnnotatorTypeConfig
     name: novice
     proportion: 0.20
-    q_mean: 0.50
+    q_mean: 0.75
     q_std: 0.08
     s_mean: 30
     s_std: 0.35
@@ -37,10 +37,10 @@ types:
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: spammer_uniform
-    proportion: 0.10
+    proportion: 0.05
     spammer_mode: uniform
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: single_class
-    proportion: 0.10
+    proportion: 0.05
     spammer_mode: uniform

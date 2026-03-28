@@ -132,6 +132,10 @@ class MultiAnnotatorSimConfig:
         RNG seed for k-means initialization.
     kmeans_iters:
         Number of Lloyd iterations for k-means.
+    feature_preprocess:
+        Preprocessing applied once to the feature matrix before any
+        geometry-based simulation step. This affects both k-means clustering
+        and kNN-derived difficulty / ambiguity estimation.
     use_difficulty:
         Whether to modulate sample-specific noise using a kNN-based difficulty
         score computed from ``X`` and ``y``.
@@ -178,6 +182,9 @@ class MultiAnnotatorSimConfig:
     kmeans_seed: int = 0
     k_means_max_iter: int = 100
     k_means_batch_size: int = 1024
+    feature_preprocess: Literal[
+        "none", "l2_normalize", "standardize"
+    ] = "none"
 
     use_difficulty: bool = False
     difficulty_k: int = 15
@@ -244,6 +251,36 @@ def _normalize_weights(w: np.ndarray) -> np.ndarray:
     if s <= 0:
         raise ValueError("Sum of type proportions must be > 0.")
     return w / s
+
+
+def _preprocess_simulation_features(
+    X: np.ndarray,
+    *,
+    mode: Literal["none", "l2_normalize", "standardize"],
+    eps: float = 1e-12,
+) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 2:
+        raise ValueError(
+            "Simulation features must be a 2D array of shape (N, D), got "
+            f"{X.shape}."
+        )
+
+    if mode == "none":
+        return X
+
+    if mode == "l2_normalize":
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        norms = np.maximum(norms, np.float32(eps))
+        return X / norms
+
+    if mode == "standardize":
+        mean = X.mean(axis=0, dtype=np.float64)
+        std = X.std(axis=0, dtype=np.float64)
+        scale = np.maximum(std, eps)
+        return ((X - mean) / scale).astype(np.float32, copy=False)
+
+    raise ValueError(f"Unknown feature_preprocess={mode!r}.")
 
 
 def allocate_type_ids(
@@ -948,6 +985,9 @@ def simulate_multi_annotator_labels_from_features(
     if len(cfg.types) == 0:
         raise ValueError("cfg.types must not be empty.")
 
+    X_sim = _preprocess_simulation_features(
+        X_features, mode=cfg.feature_preprocess
+    )
     y_true = np.asarray(y_true, dtype=np.int64)
     K = int(np.unique(y_true).size)
 
@@ -960,7 +1000,7 @@ def simulate_multi_annotator_labels_from_features(
                 batch_size=cfg.k_means_batch_size,
                 compute_labels=True,
             )
-            .fit(X_features)
+            .fit(X_sim)
             .labels_
         )
         G = int(cfg.n_clusters)
@@ -971,7 +1011,7 @@ def simulate_multi_annotator_labels_from_features(
     knn_probs = None
     if cfg.use_difficulty or cfg.use_knn_ambiguity:
         knn_probs = compute_knn_label_distribution(
-            X_features, y_true, n_classes=K, k=cfg.difficulty_k
+            X_sim, y_true, n_classes=K, k=cfg.difficulty_k
         )
 
     if cfg.use_difficulty:
@@ -1051,6 +1091,7 @@ def simulate_multi_annotator_labels_from_features(
         "beta": params["beta"],
         "spammer_mode": params["spammer_mode"],
         "single_class": params["single_class"],
+        "feature_preprocess": cfg.feature_preprocess,
         "difficulty": difficulty_raw,
         "difficulty_centered": difficulty,
         "difficulty_mean": difficulty_mean,

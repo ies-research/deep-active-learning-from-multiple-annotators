@@ -1,7 +1,8 @@
 _target_: src.assigner.GreedyPairAssigner
 selection: "epsilon_greedy"
 coverage: "hard"
-epsilon_max: 0.5
+epsilon_max: 0.2
 epsilon_min: 0.01
-epsilon_T: 25
-explore_top_m: 15
+epsilon_T: 10
+epsilon_schedule: cosine
+explore_top_m: null

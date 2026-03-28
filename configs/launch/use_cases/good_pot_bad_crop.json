@@ -10,7 +10,8 @@
       "pairing": [
         "performance_greedy_sample",
         "performance_epsilon_greedy_sample_0_05",
-        "performance_epsilon_greedy_sample_0_1"
+        "performance_epsilon_greedy_sample_0_1",
+        "performance_epsilon_greedy_sample_adaptive"
       ]
     }
   ],
@@ -58,56 +59,16 @@
       "name": "classifier",
       "type": "choices",
       "values": {
-        "annot_mix_gating_0_01": {
+        "annot_mix_gating": {
           "overrides": [
             "classifier=annot_mix_gating",
-            "training=default",
-            "classifier.sample_gate_init_prob=0.01"
+            "training=default"
           ]
         },
-        "annot_mix_gating_0_1": {
-          "overrides": [
-            "classifier=annot_mix_gating",
-            "training=default",
-            "classifier.sample_gate_init_prob=0.1"
-          ]
-        },
-        "annot_mix_gating_0_9": {
-          "overrides": [
-            "classifier=annot_mix_gating",
-            "training=default",
-            "classifier.sample_gate_init_prob=0.9"
-          ]
-        },
-        "annot_mix_gating_0_99": {
-          "overrides": [
-            "classifier=annot_mix_gating",
-            "training=default",
-            "classifier.sample_gate_init_prob=0.99"
-          ]
-        },
-        "annot_mix_8": {
+        "annot_mix": {
           "overrides": [
             "classifier=annot_mix",
-            "training=default",
-            "classifier.sample_embed_dim=8",
-            "classifier.annotator_embed_dim=8"
-          ]
-        },
-        "annot_mix_16": {
-          "overrides": [
-            "classifier=annot_mix",
-            "training=default",
-            "classifier.sample_embed_dim=16",
-            "classifier.annotator_embed_dim=16"
-          ]
-        },
-        "annot_mix_32": {
-          "overrides": [
-            "classifier=annot_mix",
-            "training=default",
-            "classifier.sample_embed_dim=32",
-            "classifier.annotator_embed_dim=32"
+            "training=default"
           ]
         },
         "crowd_em": {
@@ -154,6 +115,16 @@
             "assigner@assigner.actual=epsilon_greedy_sample",
             "assigner.actual.epsilon_min=0.1",
             "assigner.actual.epsilon_max=0.1"
+          ]
+        },
+        "performance_epsilon_greedy_sample_adaptive": {
+          "overrides": [
+            "scorer@scorer.actual=performance",
+            "assigner@assigner.actual=epsilon_greedy_sample",
+            "assigner.actual.epsilon_min=0.01",
+            "assigner.actual.epsilon_max=0.20",
+            "assigner.actual.epsilon_T=10",
+            "assigner.actual.epsilon_schedule=cosine"
           ]
         }
       }

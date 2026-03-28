@@ -5,7 +5,7 @@ defaults:
 _target_: src.dataset.MultiAnnotatorSimConfig
 
 seed: 6
-n_annotators: 10
+n_annotators: 60
 allocation: deterministic
 missing_rate: 0.0
 missing_value: -1
@@ -15,6 +15,7 @@ n_clusters: 12
 kmeans_seed: 0
 k_means_max_iter: 100
 k_means_batch_size: 1024
+feature_preprocess: l2_normalize
 
 use_difficulty: true
 difficulty_k: 15

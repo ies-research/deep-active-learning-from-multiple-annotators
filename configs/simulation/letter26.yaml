@@ -15,6 +15,7 @@ n_clusters: 52
 kmeans_seed: 0
 k_means_max_iter: 100
 k_means_batch_size: 1024
+feature_preprocess: standardize
 
 use_difficulty: true
 difficulty_k: 15
