@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sqlite3
 import warnings
 from pathlib import Path
 from typing import (
@@ -18,6 +19,7 @@ from typing import (
 )
 
 import mlflow
+from filelock import FileLock
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
@@ -299,6 +301,29 @@ def _resolve_under_original_cwd(path: PathLike) -> Path:
     return p.resolve()
 
 
+def _resolve_mlflow_db_file(db_path: PathLike) -> Path:
+    """Resolve the concrete SQLite DB file path used by MLflow."""
+    db_path_resolved = _resolve_under_original_cwd(db_path)
+    return (
+        db_path_resolved
+        if db_path_resolved.suffix.lower() == ".db"
+        else db_path_resolved / "mlruns.db"
+    )
+
+
+def _prepare_sqlite_db(db_file: Path) -> None:
+    """Create the parent directory and apply safer SQLite settings."""
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_file), timeout=30.0)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=FULL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def configure_mlflow_sqlite(
     *,
     db_path: PathLike,
@@ -323,10 +348,8 @@ def configure_mlflow_sqlite(
     - SQLite URI uses `sqlite:////abs/path/to/file.db` for absolute paths.
     - Experiment artifact location is effectively fixed after creation.
     """
-    db_path_resolved = _resolve_under_original_cwd(db_path)
-    db_file = db_path_resolved
-    if db_file.suffix.lower() != ".db":
-        db_file = db_file / "mlruns.db"
+    db_file = _resolve_mlflow_db_file(db_path)
+    _prepare_sqlite_db(db_file)
 
     tracking_uri = f"sqlite:///{db_file.as_posix()}"
     mlflow.set_tracking_uri(tracking_uri)
@@ -396,35 +419,42 @@ def log_results_to_mlflow(
     -------
     None
     """
-    # Enable async logging if supported by your MLflow version.
-    # API is mlflow.config.enable_async_logging(True). (Your previous call was wrong.)
+    # SQLite is much safer with synchronous writes in multi-process settings.
     try:
-        mlflow.config.enable_async_logging(True)
+        mlflow.config.enable_async_logging(False)
     except Exception:
         pass
 
-    configure_mlflow_sqlite(
-        db_path=db_path,
-        experiment_name=experiment_name,
-        artifact_root=artifact_root,
-    )
+    db_file = _resolve_mlflow_db_file(db_path)
+    lock = FileLock(str(db_file) + ".lock", timeout=600)
 
-    with mlflow.start_run(run_name=run_name):
-        log_hydra_config_to_mlflow(
-            cfg, artifact_dir=config_artifact_dir, log_params=log_config_params
+    # Serialize writers around SQLite-backed MLflow operations to reduce the
+    # chance of corruption on shared or heavily contended storage.
+    with lock:
+        configure_mlflow_sqlite(
+            db_path=db_path,
+            experiment_name=experiment_name,
+            artifact_root=artifact_root,
         )
 
-        if also_log_cycle_metrics_artifact:
-            # This is the "truth"; MLflow metrics are for plotting/querying.
-            mlflow.log_dict(list(cycle_metrics), "cycle_metrics.json")
+        with mlflow.start_run(run_name=run_name):
+            log_hydra_config_to_mlflow(
+                cfg,
+                artifact_dir=config_artifact_dir,
+                log_params=log_config_params,
+            )
 
-        if log_every <= 0:
-            raise ValueError("log_every must be >= 1.")
+            if also_log_cycle_metrics_artifact:
+                # This is the "truth"; MLflow metrics are for plotting/querying.
+                mlflow.log_dict(list(cycle_metrics), "cycle_metrics.json")
 
-        steps = list(range(len(cycle_metrics))) if steps is None else steps
-        for step, m in zip(steps, cycle_metrics):
-            if step % log_every != 0:
-                continue
-            safe = _sanitize_metrics(m)
-            if safe:
-                mlflow.log_metrics(safe, step=step)
+            if log_every <= 0:
+                raise ValueError("log_every must be >= 1.")
+
+            steps = list(range(len(cycle_metrics))) if steps is None else steps
+            for step, m in zip(steps, cycle_metrics):
+                if step % log_every != 0:
+                    continue
+                safe = _sanitize_metrics(m)
+                if safe:
+                    mlflow.log_metrics(safe, step=step)
