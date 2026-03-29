@@ -1,1 +1,2 @@
 _target_: skactiveml.pool.RandomSampling
+random_state: ${seed}

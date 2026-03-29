@@ -1,1 +1,2 @@
 _target_: src.scorer.RandomPairScorer
+random_state: ${seed}

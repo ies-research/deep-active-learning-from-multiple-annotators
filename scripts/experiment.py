@@ -215,6 +215,7 @@ def experiment(cfg):
         max_candidates=cfg.al.max_candidate_samples,
         exclude_non_subsample=True,
         missing_label=cfg.missing_label,
+        random_state=cfg.seed,
     )
     actual_qs = instantiate(cfg.sample.actual, missing_label=cfg.missing_label)
     actual_qs = SubSamplingWrapper(
@@ -222,6 +223,7 @@ def experiment(cfg):
         max_candidates=cfg.al.max_candidate_samples,
         exclude_non_subsample=True,
         missing_label=cfg.missing_label,
+        random_state=cfg.seed,
     )
 
     # Build sample-annotator pair utility model. ------------------------------
