@@ -1,47 +1,52 @@
 # Deep Active Learning from Multiple Annotators
 
-This repository contains the code used for experiments on deep active
-learning from multiple annotators. The README is intended to become the
-central entry point for reproducing results, preparing datasets, and
-launching runs.
+This repository contains the current experiment code for deep active learning
+with multiple annotators. The codebase is centered around a Hydra-configured
+training pipeline in `scripts/experiment.py`, dataset and cache preparation
+helpers, and a manifest-driven launcher for local and SLURM-backed sweeps.
 
 ## Environment
 
-Create and activate the project environment before running data preparation
-or experiments:
+Create one of the Conda environments before running preparation scripts or
+experiments:
 
 ```bash
 conda env create -f environment.yml
 conda activate dalc
 ```
 
-Environment files:
+If you need to activate Conda via an explicit path, the equivalent command is:
 
-- [environment.yml](environment.yml): lean runtime environment for running
-  experiments and preparation scripts
+```bash
+source /path/to/miniconda3/bin/activate dalc
+```
+
+Additional environment files:
+
+- [environment.yml](environment.yml): lean runtime environment for experiments
+  and preparation scripts
 - [environment.gpu.yml](environment.gpu.yml): GPU-oriented runtime environment
-  with a more opinionated model stack for accelerator-backed runs
-- [environment.dev.yml](environment.dev.yml): contributor-oriented environment
-  with tests, linting, notebook tooling, and documentation packages
+  with extra accelerator-focused packages
+- [environment.dev.yml](environment.dev.yml): development environment with
+  testing, linting, notebook, and documentation tooling
 
-For GPU-oriented training runs:
+GPU-oriented environment:
 
 ```bash
 conda env create -f environment.gpu.yml
 conda activate dalc-gpu
 ```
 
-For development work:
+Development environment:
 
 ```bash
 conda env create -f environment.dev.yml
 conda activate dalc-dev
 ```
 
-The runtime environment is intentionally kept lean and focused on the
-dependencies that are directly used in the current codebase. The remaining
-PyTorch stack still reflects a Linux/GPU-oriented setup fairly closely, so
-users on different CUDA stacks may need to adjust some GPU packages.
+All three environment files currently target Python 3.12.
+
+## Paths And Overrides
 
 Default paths are defined in
 [configs/paths/default.yaml](configs/paths/default.yaml):
@@ -54,16 +59,91 @@ Default paths are defined in
 - `paths.multi_annotator_cache_dir=${paths.master_dir}/.hf_multi_annotator_cache`
 - `results_path=${paths.results_dir}/mlflow`
 
-The helper scripts also respect environment overrides:
+Helper scripts and SLURM wrappers also respect:
 
-- `DALC_DATA_ROOT`: overrides `paths.master_dir` for dataset preparation and manifest-run helpers
-- `DALC_RESULTS_ROOT`: overrides `paths.results_dir` for MLflow setup and SLURM launch helpers
+- `DALC_DATA_ROOT`: overrides `paths.master_dir`
+- `DALC_RESULTS_ROOT`: overrides `paths.results_dir`
+- `DALC_REPO_ROOT`: absolute repository root used by SLURM wrappers
+- `CONDA_BASE`: optional Conda installation root if `conda` is not already on
+  `PATH`
+- `CONDA_ENV_NAME`: optional environment name for SLURM wrappers, defaults to
+  `dalc`
+
+## Git-Tracked Directory Overview
+
+The following directories are currently represented in `git ls-files`. This
+section intentionally lists tracked directories only; local-only directories
+such as `tests/`, `figures/`, or `mlflow/` are not included here unless they
+are versioned.
+
+| Directory | Purpose |
+| --- | --- |
+| `.` | Repository root with the main README, license, and Conda environment files |
+| `configs` | Hydra configuration root |
+| `configs/al` | Active-learning budgets, cycle counts, and annotator-capacity settings |
+| `configs/assigner` | Sample-annotator pair assignment strategies |
+| `configs/classifier` | Multi-annotator classifier definitions |
+| `configs/dataset` | Dataset source specifications |
+| `configs/embedder` | Feature extractor and embedding backends |
+| `configs/launch/methods` | Reusable manifest method definitions |
+| `configs/launch/use_cases` | Manifest use-case grids and study definitions |
+| `configs/module` | Neural module definitions such as linear and MLP heads |
+| `configs/paths` | Shared path defaults |
+| `configs/pipeline` | Feature-pipeline settings |
+| `configs/sample` | Initial and active sample-query strategies |
+| `configs/scheduler` | Ratio scheduler variants |
+| `configs/scorer` | Pair scoring and acquisition utility models |
+| `configs/simulation` | Simulated annotator setups |
+| `configs/simulation/profile` | Simulation difficulty/profile presets |
+| `configs/training` | Optimizer and batch-size presets |
+| `manifests` | Generated JSONL manifest output directory placeholder |
+| `notebooks` | Exploratory and analysis notebooks |
+| `scripts` | CLI entry points for experiments, manifest generation, MLflow setup, evaluation, and dataset preparation |
+| `slurm` | Batch wrappers for dataset preparation, MLflow setup, and manifest arrays |
+| `src` | Python package root |
+| `src/assigner` | Pair assignment implementations |
+| `src/classifier` | Classifier implementations for aggregate, EM, RegCrowdNet, DAlC-like, and annotator-mixture models |
+| `src/dataset` | Dataset specs, caching, I/O, and feature-pipeline code |
+| `src/embedder` | Embedding backends including Hugging Face and tabular identity encoders |
+| `src/module` | Torch modules and losses |
+| `src/scheduler` | Ratio scheduler implementations |
+| `src/scorer` | Acquisition scoring implementations |
+| `src/utils` | Seeding, evaluation, printing, and MLflow helpers |
+
+## Running Experiments
+
+The main entry point is [scripts/experiment.py](scripts/experiment.py). It
+loads the Hydra defaults from [configs/experiment.yaml](configs/experiment.yaml)
+and then composes dataset, embedder, simulation, classifier, scheduler,
+sampler, scorer, assigner, and training settings from the config groups.
+
+A minimal example looks like:
+
+```bash
+conda activate dalc
+python scripts/experiment.py \
+  dataset=trec6 \
+  simulation=trec6 \
+  al=trec6
+```
+
+You can override any Hydra value on the command line, for example:
+
+```bash
+python scripts/experiment.py \
+  dataset=trec6 \
+  simulation=trec6 \
+  al=trec6 \
+  paths.master_dir=/path/to/data/root \
+  paths.results_dir=/path/to/results/root \
+  experiment_name=local_debug_run
+```
 
 ## Dataset Preparation
 
-### `dopanim`
+### DOPAnim
 
-The repository can use `dopanim` as a local Hugging Face `DatasetDict` via
+The repository can use DOPAnim as a local Hugging Face `DatasetDict` via
 `source_kind: from_disk`.
 
 Prepare the default `full` variant with:
@@ -73,174 +153,121 @@ conda activate dalc
 python scripts/prepare_dopanim.py --variant full
 ```
 
-With the current path settings, the script defaults are:
+With the current defaults, the script resolves:
 
 - `--data-root`: `DALC_DATA_ROOT` when set, otherwise `paths.master_dir`
 - `--raw-dir`: `<data-root>/raw/dopanim`
 - `--output-dir`: `<data-root>/dopanim_<variant>`
 
-That means `--variant full` writes the processed dataset to
-`<data-root>/dopanim_full`, which should match the dataset source configured
-in [configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml).
+That means `--variant full` writes to `<data-root>/dopanim_full`, which matches
+[configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml).
 
 Available parameters:
 
 - `--data-root PATH`: base directory for raw and processed dataset artifacts
-- `--raw-dir PATH`: exact directory for the downloaded Zenodo archive and extracted files
-- `--output-dir PATH`: exact directory where the processed `DatasetDict` is saved
-- `--variant {full,worst-var,rand-var,worst-1,worst-2,worst-3,worst-4,rand-1,rand-2,rand-3,rand-4}`: train annotation subset to materialize
+- `--raw-dir PATH`: exact directory for the downloaded Zenodo archive and
+  extracted files
+- `--output-dir PATH`: exact directory where the processed `DatasetDict` is
+  saved
+- `--variant {full,worst-var,rand-var,worst-1,worst-2,worst-3,worst-4,rand-1,rand-2,rand-3,rand-4}`:
+  train annotation subset to materialize
 - `--force-download`: re-download and re-extract the raw archive
 - `--force-rebuild`: overwrite an existing processed dataset directory
 
-Example with explicit paths:
+Example with an explicit data root:
 
 ```bash
-conda activate dalc
 python scripts/prepare_dopanim.py \
   --data-root /path/to/data/root \
   --variant full \
   --force-rebuild
 ```
 
-After preparation, run experiments with `dataset=dopanim`. The legacy config
-name `dataset=dopanim15` still exists as an alias. If you build a non-`full`
-variant, either update
-[configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml)
-or override `dataset.source` at runtime so it points to the matching output
-directory.
+If you prepare a non-`full` variant, update
+[configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml) or override
+`dataset.source` at runtime so it points to the matching output directory.
 
-### Preparing Cached Embeddings And Simulated Multi-Annotator Labels
+### Cached Embeddings And Simulated Multi-Annotator Labels
 
-The batch entry point for preparing dataset artifacts is
-[slurm/prepare_datasets.sbatch](slurm/prepare_datasets.sbatch).
-It prepares cached embeddings for the configured datasets and, where needed,
-also prepares simulated multi-annotator labels.
+The batch entry point for preparing cached artifacts is
+[slurm/prepare_datasets.sbatch](slurm/prepare_datasets.sbatch). The current
+array definition prepares exactly these datasets:
 
-The SLURM scripts can be configured through global environment variables
-before submission. The most important one is `DALC_REPO_ROOT`, which is used
-to resolve absolute Python entry-point paths at runtime. For SLURM-managed
-working directory and logs, you can also use the standard `SBATCH_CHDIR`,
-`SBATCH_OUTPUT`, and `SBATCH_ERROR` variables.
+- `0`: `trec6` with classification embedder `bert` and simulation `trec6`
+- `1`: `letter26` with classification embedder `identity_tabular` and
+  simulation `letter26`
+- `2`: `dopanim` with classification embedder `dinov2` and no simulation step
 
-Example:
+For `dopanim`, the script runs `scripts/prepare_dopanim.py --variant full`
+before preparing cached embeddings. For `letter26`, the helper uses the
+tabular identity embedder for both classification and simulation.
+
+Submit the full SLURM array with:
 
 ```bash
 export DALC_REPO_ROOT=/absolute/path/to/deep-active-learning-from-multiple-annotators
-export SBATCH_CHDIR="${DALC_REPO_ROOT}"
-export SBATCH_OUTPUT="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out"
-export SBATCH_ERROR="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err"
 mkdir -p "${DALC_REPO_ROOT}/slurm/logs"
-```
 
-Current array index mapping:
-
-- `0`: `dtd47`
-- `1`: `dermamnist7`
-- `2`: `food101`
-- `3`: `audiomnist10`
-- `4`: `skits2i14`
-- `5`: `banking77`
-- `6`: `trec6`
-- `7`: `letter_recognition`
-- `8`: `dopanim`
-
-For `letter_recognition`, the script uses the Hugging Face dataset
-`wwydmanski/tabular-letter-recognition` together with the
-`identity_tabular` embedder for both classification and simulation. The
-tabular embedder fits feature-wise standardization on the training split and
-reuses that transform for test and simulation features.
-
-For `dopanim`, the script additionally runs `scripts/prepare_dopanim.py
---variant full` before preparing embeddings. Its classification embedder is
-`dinov2`, and no simulation step is run because `dopanim` already contains annotator
-labels.
-
-#### Via SLURM
-
-Submit the full array with:
-
-```bash
 sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-8 \
+  --array=0-2 \
   slurm/prepare_datasets.sbatch
 ```
 
-You can also pass a specific Python executable as the first positional
-argument:
+You can pass a specific Python executable as the first positional argument:
 
 ```bash
 sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-8 \
+  --array=0-2 \
   slurm/prepare_datasets.sbatch \
   /path/to/python
 ```
 
-#### Without SLURM
-
-The script can also be executed as a plain shell script by setting
-`SLURM_ARRAY_TASK_ID` manually.
-
-By default, the SLURM helper scripts activate `conda` environment `dalc`.
-If your `conda` installation is not already available in the job shell, set
-`CONDA_BASE=/path/to/miniconda3`. To use a different environment name, set
-`CONDA_ENV_NAME`.
-
-Run one dataset locally, for example `dopanim` (`SLURM_ARRAY_TASK_ID=8`):
+You can also run the same helper locally by setting `SLURM_ARRAY_TASK_ID`
+manually:
 
 ```bash
-SLURM_ARRAY_TASK_ID=8 bash slurm/prepare_datasets.sbatch
+SLURM_ARRAY_TASK_ID=2 bash slurm/prepare_datasets.sbatch
 ```
 
-Run one dataset with a custom Python executable:
+Run all currently configured preparation tasks locally:
 
 ```bash
-SLURM_ARRAY_TASK_ID=8 bash slurm/prepare_datasets.sbatch /path/to/python
-```
-
-Run the full preparation sequence locally:
-
-```bash
-for i in {0..8}; do
+for i in {0..2}; do
   SLURM_ARRAY_TASK_ID=$i bash slurm/prepare_datasets.sbatch
 done
 ```
 
-## Experiment Launch Pipeline
+## Manifest-Driven Launch Pipeline
 
-The repository also contains a manifest-driven launch pipeline for experiment
-runs.
+The repository contains a manifest workflow for reproducible experiment grids.
+The relevant inputs live in:
 
-### Layout
+- [configs/launch/methods](configs/launch/methods): reusable method definitions
+- [configs/launch/use_cases](configs/launch/use_cases): study-specific Cartesian
+  products over datasets, seeds, methods, and other factors
 
-- `configs/launch/methods/*.json`: frozen method definitions with reusable
-  Hydra overrides
-- `configs/launch/use_cases/*.json`: study-specific Cartesian products over
-  datasets, seeds, methods, and other factors
-
-### Workflow
-
-The launch flow consists of two steps:
+The basic flow is:
 
 1. Generate a JSONL manifest from a use-case specification.
 2. Execute one manifest row locally or submit the full manifest as a SLURM
    array.
 
-Example:
+Generate a manifest:
 
 ```bash
 python scripts/generate_manifest.py annotator_selection_main
 ```
 
-By default, this writes `manifests/<use_case>.jsonl` and prints a short
-preview of the generated rows.
+By default, this writes `manifests/<use_case>.jsonl` and prints a short preview
+of the generated rows.
 
-To execute a single row locally:
+Execute one row locally:
 
 ```bash
 python scripts/run_manifest_row.py \
@@ -248,11 +275,11 @@ python scripts/run_manifest_row.py \
   --row 0
 ```
 
-You can append extra Hydra overrides after the manifest row, for example:
+Append extra Hydra overrides after the manifest row:
 
 ```bash
 python scripts/run_manifest_row.py \
-  --manifest manifests/good_pot_bad_crop.jsonl \
+  --manifest manifests/annotator_selection_main.jsonl \
   --row 0 \
   --override paths.master_dir=/path/to/data/root \
   --override paths.results_dir=/path/to/results/root
@@ -260,12 +287,9 @@ python scripts/run_manifest_row.py \
 
 ### Launching A Manifest Via SLURM
 
-The batch entry point is
-[slurm/run_manifest_array.sbatch](slurm/run_manifest_array.sbatch).
-The script runs
-[scripts/run_manifest_row.py](scripts/run_manifest_row.py)
-and maps each SLURM array index to one manifest row through
-`SLURM_ARRAY_TASK_ID`.
+The batch wrapper is
+[slurm/run_manifest_array.sbatch](slurm/run_manifest_array.sbatch). It maps
+`SLURM_ARRAY_TASK_ID` to the corresponding manifest row.
 
 Generate the manifest first:
 
@@ -273,7 +297,7 @@ Generate the manifest first:
 python scripts/generate_manifest.py annotator_selection_main
 ```
 
-Determine the number of rows in the manifest:
+Determine the number of rows:
 
 ```bash
 wc -l manifests/annotator_selection_main.jsonl
@@ -292,47 +316,50 @@ sbatch \
   manifests/annotator_selection_main.jsonl
 ```
 
-Example for a 128-row manifest:
+Pass a custom Python executable as the second positional argument if needed:
 
 ```bash
 sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-127 \
-  slurm/run_manifest_array.sbatch \
-  manifests/annotator_selection_main.jsonl
-```
-
-An alternative Python executable can be passed as the second positional
-argument:
-
-```bash
-sbatch \
-  --chdir="${DALC_REPO_ROOT}" \
-  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
-  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-127 \
+  --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
   manifests/annotator_selection_main.jsonl \
   /path/to/python
 ```
 
-The default batch script requests one GPU, four CPUs, and 32 GB of memory.
-Provide absolute log paths via `--output` and `--error` at submission time,
-because SLURM resolves those paths before the script body starts.
+### Manifest Schema Summary
 
-### Optional MLflow Setup Step
+Each method file in `configs/launch/methods` is a JSON object with:
 
-Runs already create the SQLite backend and experiment lazily when logging
-starts, but for larger SLURM sweeps it can be useful to pre-create the MLflow
-database and experiment once before launching the array. This avoids a
-"first writer wins" race on a fresh backend and makes the artifact location
-explicit up front.
+- `name`: stable method identifier
+- `description`: short human-readable summary
+- `tags`: optional metadata copied into manifest rows
+- `overrides`: Hydra CLI overrides applied to each run
+
+Each use-case file in `configs/launch/use_cases` is a JSON object with:
+
+- `name`: stable manifest or study identifier
+- `description`: short summary
+- `common_overrides`: Hydra overrides shared by all rows
+- `axes`: ordered expansion axes
+- `exclude`: optional list of partial assignments to skip
+
+Supported axis types are:
+
+- `template`: render override templates for each value
+- `choices`: pick overrides and tags from a named mapping
+- `registry`: load method definitions from `methods/*.json`
+
+## Optional MLflow Setup Step
+
+Runs create the SQLite backend lazily when logging starts, but for larger
+sweeps it is often useful to pre-create the backend and experiment once.
 
 The helper script is [scripts/setup_mlflow.py](scripts/setup_mlflow.py). It
-uses the same settings as training runs: `results_path` is used both as the
-SQLite backend location and as the experiment artifact root.
+uses the resolved `results_path` as both the SQLite backend location and the
+artifact root.
 
 Prepare an experiment locally:
 
@@ -385,83 +412,3 @@ sbatch --dependency=afterok:${SETUP_JOB_ID} \
   slurm/run_manifest_array.sbatch \
   manifests/good_pot_bad_crop.jsonl
 ```
-
-### Method Schema
-
-Each method file is a JSON object with:
-
-- `name`: stable method identifier
-- `description`: short human-readable summary
-- `tags`: optional metadata copied into manifest rows
-- `overrides`: list of Hydra CLI overrides
-
-Example:
-
-```json
-{
-  "name": "ks_big",
-  "description": "Kernel-smoothed Bayesian gain with greedy sample assignment",
-  "tags": {
-    "scorer_family": "ks_big",
-    "assigner_family": "greedy_sample"
-  },
-  "overrides": [
-    "scorer@scorer.actual=ks_big",
-    "assigner@assigner.actual=greedy_sample"
-  ]
-}
-```
-
-### Use-Case Schema
-
-Each use-case file is a JSON object with:
-
-- `name`: stable manifest or use-case identifier
-- `description`: short summary
-- `common_overrides`: Hydra overrides shared by all rows
-- `axes`: ordered list of expansion axes
-
-Supported axis types:
-
-- `template`: expand `values` and render each listed override template with `{value}`
-- `choices`: expand a mapping from option name to `{overrides, tags}`
-- `registry`: load one file per named method from `methods/*.json`
-
-The generator forms the Cartesian product across axes and writes one JSON line
-per run to `manifests/<use_case>.jsonl`.
-
-### Coupled Parameters
-
-Use-case specs can restrict combinations in two ways:
-
-- Option-level `when`: a choice or registry entry may include a `when` mapping;
-  the option is only valid if the selected labels of the referenced axes match
-  that mapping
-- Top-level `exclude`: a use-case may define a list of partial axis assignments
-  to skip entirely
-
-Example:
-
-```json
-{
-  "name": "example",
-  "common_overrides": [],
-  "exclude": [
-    {
-      "channel_variant": "scalar_uniform_confusion",
-      "gain_type": ["entropy", "brier"]
-    }
-  ],
-  "axes": []
-}
-```
-
-This keeps the specification compact while avoiding meaningless full-grid
-combinations.
-
-## Planned README Extensions
-
-This README is intended to grow into the main reproducibility document for the
-associated paper. In a later stage, it should also document the repository
-structure, the central methodological components, and the recommended path for
-reproducing the main experimental results end to end.
