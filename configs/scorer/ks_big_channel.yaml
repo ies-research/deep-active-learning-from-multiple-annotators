@@ -4,6 +4,9 @@ _target_: src.scorer.KernelSmoothedBayesianGain
 accuracy_mean: 0.99
 accuracy_strength: 1.0 # to be investigated
 
+# Correctness mode
+correctness_mode: "classifier"
+
 # Sample / annotator kernels
 gamma_x: "median" # to be investigated
 gamma_x_scope: "global" # to be investigated

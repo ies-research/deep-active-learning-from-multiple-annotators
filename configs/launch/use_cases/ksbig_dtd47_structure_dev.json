@@ -1,0 +1,73 @@
+{
+  "name": "ksbig_dtd47_structure_dev",
+  "description": "DTD47 development study for ks_big structural choices",
+  "common_overrides": [
+    "dataset=dtd47",
+    "simulation=dtd47",
+    "al=dtd47",
+    "classifier=annot_mix",
+    "sample@sample.actual=margin",
+    "assigner@assigner.actual=greedy_sample",
+    "scorer@scorer.actual=ks_big_channel",
+    "experiment_name=ksbig_dtd47_structure_dev",
+    "scorer.actual.channel_variant=channel",
+    "scorer.actual.correctness_mode=classifier",
+    "scorer.actual.gamma_x=median",
+    "scorer.actual.gamma_x_scope=global",
+    "scorer.actual.gamma_a=median",
+    "scorer.actual.use_ess_beta=true",
+    "scorer.actual.use_ess_label_dirichlet=true",
+    "scorer.actual.sample_label_dirichlet=true",
+    "scorer.actual.channel_wrong_label_mode=normalize",
+    "scorer.actual.gain_type=margin",
+    "scorer.actual.n_mc_samples=20"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "annotator_lambda",
+      "type": "template",
+      "values": [0.0, 0.5, 0.8, 1.0],
+      "overrides": ["scorer.actual.annotator_lambda={value}"]
+    },
+    {
+      "name": "use_annotator_embeddings",
+      "type": "choices",
+      "values": {
+        "false": {
+          "overrides": ["scorer.actual.use_annotator_embeddings=false"]
+        },
+        "true": {
+          "overrides": ["scorer.actual.use_annotator_embeddings=true"]
+        }
+      }
+    },
+    {
+      "name": "class_prior_mode",
+      "type": "choices",
+      "values": {
+        "classifier": {
+          "overrides": [
+            "scorer.actual.class_prior=classifier",
+            "scorer.actual.use_ess_class_prior=false",
+            "scorer.actual.sample_class_prior=false"
+          ]
+        },
+        "kernel": {
+          "overrides": [
+            "scorer.actual.class_prior=kernel",
+            "scorer.actual.class_prior_strength=1.0",
+            "scorer.actual.class_prior_lambda=0.0",
+            "scorer.actual.use_ess_class_prior=true",
+            "scorer.actual.sample_class_prior=true"
+          ]
+        }
+      }
+    }
+  ]
+}

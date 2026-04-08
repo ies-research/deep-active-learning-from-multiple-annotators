@@ -33,33 +33,23 @@ if [[ $# -lt 1 ]]; then
 fi
 
 DATASETS=(
-  "trec6"
-  "letter26"
-  "dopanim"
+  "dtd47"
 )
 
 CLASSIFICATION_EMBEDDERS=(
-  "bert"
-  "identity_tabular"
-  "dinov2"
+  "clip"
 )
 
 SIMULATION_EMBEDDERS=(
-  "bert"
-  "identity_tabular"
-  "null"
+  "dinov2"
 )
 
 SIMULATION_CONFIGS=(
-  "trec6"
-  "letter26"
-  "null"
+  "dtd47"
 )
 
 PREP_STEPS=(
   "none"
-  "none"
-  "prepare_dopanim"
 )
 
 TASK_INDEX="${SLURM_ARRAY_TASK_ID}"

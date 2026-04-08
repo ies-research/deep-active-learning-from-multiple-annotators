@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=dalc-manifest
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=16G
+#SBATCH --mem=12G
 
 set -euo pipefail
 

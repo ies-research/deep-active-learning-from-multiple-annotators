@@ -50,8 +50,16 @@ class KernelSmoothedBayesianGain(PairScorer):
     Kernel-smoothed posterior parameters are built from observed annotations
     (x_i, a_i, y_i):
 
-    - Beta correctness model (soft counts using classifier probabilities)
-        m_i = p_clf(y_i | x_i)
+    - Beta correctness model (soft counts using configurable correctness
+      evidence)
+        m_i = p_clf(y_i | x_i)                                    if
+              correctness_mode="classifier"
+        m_i = p_clf(worker a_i correct | x_i)                     if
+              correctness_mode="annotator_perf"
+        m_i = p(Y=y_i | x_i, worker a_i, observed label y_i)      if
+              correctness_mode="annotator_perf_posterior"
+        m_i = p(Y=y_i | x_i, worker a_i, observed label y_i)      if
+              correctness_mode="confusion_posterior"
         s(x,a) = sum_i w_i(x,a) * m_i
         f(x,a) = sum_i w_i(x,a) * (1 - m_i)
         alpha = alpha0 + s,  beta = beta0 + f
@@ -115,6 +123,23 @@ class KernelSmoothedBayesianGain(PairScorer):
     channel_variant : {"channel", "scalar_uniform_confusion", /
             "diag_uniform_confusion","full_confusion"}, default="channel"
         Annotator noise parameterization used for gain computation.
+    correctness_mode : {"classifier", "annotator_perf", /
+            "annotator_perf_posterior", "confusion_posterior", "auto"}, \
+            default="classifier"
+        Source of observed-annotation correctness evidence used in the
+        kernel-smoothed posteriors:
+        - "classifier": use ``p_clf(y_i | x_i)``.
+        - "annotator_perf": use classifier-provided annotator correctness
+          probabilities for the observed annotator.
+        - "annotator_perf_posterior": build a synthetic confusion matrix from
+          classifier-provided annotator correctness probabilities with uniform
+          off-diagonal error mass, then compute posterior latent-class
+          responsibilities conditioned on the observed label.
+        - "confusion_posterior": use classifier-provided confusion matrices to
+          compute posterior latent-class responsibilities conditioned on the
+          observed label.
+        - "auto": prefer confusion matrices, else annotator correctness
+          probabilities, else fallback to ``p_clf(y_i | x_i)``.
     class_prior : {"classifier", "uniform", "kernel"}, default="classifier"
         Prior used for the latent class in the IG computation:
         - "classifier": use the classifier posterior ``p(Y|x)``.
@@ -196,6 +221,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         channel_label_dirichlet_strength: float = 1.0,
         gain_type: str = "entropy",
         channel_variant: str = "channel",
+        correctness_mode: str = "classifier",
         class_prior: str = "classifier",
         class_prior_strength: float = 1.0,
         class_prior_lambda: float = 0.0,
@@ -230,6 +256,7 @@ class KernelSmoothedBayesianGain(PairScorer):
         )
         self.gain_type = str(gain_type)
         self.channel_variant = str(channel_variant)
+        self.correctness_mode = str(correctness_mode)
         self.class_prior = str(class_prior)
         self.class_prior_strength = float(class_prior_strength)
         self.class_prior_lambda = float(class_prior_lambda)
@@ -296,6 +323,19 @@ class KernelSmoothedBayesianGain(PairScorer):
                 "channel_variant must be one of "
                 "{'channel', 'scalar_uniform_confusion', "
                 "'diag_uniform_confusion', 'full_confusion'}"
+            )
+        if self.correctness_mode not in {
+            "classifier",
+            "annotator_perf",
+            "annotator_perf_posterior",
+            "confusion_posterior",
+            "auto",
+        }:
+            raise ValueError(
+                "correctness_mode must be one of "
+                "{'classifier', 'annotator_perf', "
+                "'annotator_perf_posterior', "
+                "'confusion_posterior', 'auto'}"
             )
         if self.class_prior not in {"classifier", "uniform", "kernel"}:
             raise ValueError(
@@ -511,16 +551,21 @@ class KernelSmoothedBayesianGain(PairScorer):
 
         y_obs_oh = np.eye(K, dtype=float)[y_obs_idx]
 
-        # Observed sample embeddings + classifier probabilities for soft correctness counts.
-        r_obs, X_obs_emb = clf.predict_proba(
-            X[obs_s], extra_outputs=["embeddings"]
+        # Observed sample embeddings + mode-specific correctness evidence.
+        n_annotators_total = y.shape[1]
+        (
+            r_obs,
+            X_obs_emb,
+            m_obs,
+            responsibility_obs,
+            resolved_correctness_mode,
+        ) = self._resolve_observed_annotation_evidence(
+            clf=clf,
+            X_obs=X[obs_s],
+            obs_a=obs_a,
+            y_obs_idx=y_obs_idx,
+            n_annotators_total=n_annotators_total,
         )
-        r_obs = np.asarray(r_obs, dtype=float)
-        r_obs = np.clip(r_obs, 1e-15, 1.0)
-        r_obs = r_obs / np.maximum(r_obs.sum(axis=1, keepdims=True), 1e-15)
-        X_obs_emb = _l2_normalize(np.asarray(X_obs_emb, dtype=float))
-        m_obs = r_obs[np.arange(obs_s.size), y_obs_idx]
-        m_obs = np.clip(m_obs, 0.0, 1.0)
         _, obs_first_idx = np.unique(obs_s, return_index=True)
         X_obs_cls_emb = X_obs_emb[obs_first_idx]
         r_obs_cls = r_obs[obs_first_idx]
@@ -531,7 +576,6 @@ class KernelSmoothedBayesianGain(PairScorer):
             np.clip(global_obs_acc_mean, eps_prior, 1.0 - eps_prior)
         )
 
-        n_annotators_total = y.shape[1]
         obs_count_by_annotator = np.bincount(
             obs_a, minlength=n_annotators_total
         ).astype(float)
@@ -700,8 +744,16 @@ class KernelSmoothedBayesianGain(PairScorer):
                 alpha_diag = np.empty((len(sample_indices), K), dtype=float)
                 beta_diag = np.empty((len(sample_indices), K), dtype=float)
                 y_eq = y_obs_oh
+                row_responsibility_obs = (
+                    responsibility_obs
+                    if resolved_correctness_mode in {
+                        "annotator_perf_posterior",
+                        "confusion_posterior",
+                    }
+                    else r_obs
+                )
                 for z in range(K):
-                    K_row = K_obs_cand * r_obs[:, [z]]
+                    K_row = K_obs_cand * row_responsibility_obs[:, [z]]
                     a_z, b_z, _ = self.parzen_beta_posterior(
                         K=K_row,
                         p=y_eq[:, z],
@@ -719,8 +771,16 @@ class KernelSmoothedBayesianGain(PairScorer):
                 confusion_rows = np.empty(
                     (len(sample_indices), K, K), dtype=float
                 )
+                row_responsibility_obs = (
+                    responsibility_obs
+                    if resolved_correctness_mode in {
+                        "annotator_perf_posterior",
+                        "confusion_posterior",
+                    }
+                    else r_obs
+                )
                 for z in range(K):
-                    K_row = K_obs_cand * r_obs[:, [z]]
+                    K_row = K_obs_cand * row_responsibility_obs[:, [z]]
                     row_post, _ = self.parzen_dirichlet_posterior(
                         K=K_row,
                         Y=y_obs_oh,
@@ -810,6 +870,301 @@ class KernelSmoothedBayesianGain(PairScorer):
             U = np.where(available_mask, U, np.nan)
 
         return U
+
+    def _resolve_observed_annotation_evidence(
+        self,
+        *,
+        clf,
+        X_obs,
+        obs_a: np.ndarray,
+        y_obs_idx: np.ndarray,
+        n_annotators_total: int,
+        eps: float = 1e-15,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+        obs_out = clf.predict_proba(X_obs, extra_outputs=["embeddings"])
+        if not isinstance(obs_out, (tuple, list)) or len(obs_out) < 2:
+            raise ValueError(
+                "clf.predict_proba must return class probabilities and "
+                "embeddings for observed annotation evidence."
+            )
+
+        r_obs = np.asarray(obs_out[0], dtype=float)
+        r_obs = np.clip(r_obs, eps, 1.0)
+        r_obs = r_obs / np.maximum(r_obs.sum(axis=1, keepdims=True), eps)
+        X_obs_emb = _l2_normalize(np.asarray(obs_out[1], dtype=float))
+
+        responsibility_obs = r_obs.copy()
+        m_classifier = np.clip(
+            r_obs[np.arange(obs_a.size), y_obs_idx],
+            0.0,
+            1.0,
+        )
+
+        if self.correctness_mode == "classifier":
+            return (
+                r_obs,
+                X_obs_emb,
+                m_classifier,
+                responsibility_obs,
+                "classifier",
+            )
+
+        m_perf = None
+
+        if self.correctness_mode in {"confusion_posterior", "auto"}:
+            confusion = self._predict_optional_extra_output(
+                clf=clf,
+                X=X_obs,
+                output_name="annotator_confusion_matrices",
+                allow_missing=self.correctness_mode == "auto",
+            )
+            if confusion is not None:
+                pair_confusions = self._take_observed_pair_confusions(
+                    confusion=confusion,
+                    obs_a=obs_a,
+                    n_annotators_total=n_annotators_total,
+                    eps=eps,
+                )
+                responsibility_obs = self._confusion_posterior_responsibilities(
+                    r_obs=r_obs,
+                    pair_confusions=pair_confusions,
+                    y_obs_idx=y_obs_idx,
+                    eps=eps,
+                )
+                m_conf = np.clip(
+                    responsibility_obs[np.arange(obs_a.size), y_obs_idx],
+                    0.0,
+                    1.0,
+                )
+                return (
+                    r_obs,
+                    X_obs_emb,
+                    m_conf,
+                    responsibility_obs,
+                    "confusion_posterior",
+                )
+            if self.correctness_mode == "confusion_posterior":
+                raise RuntimeError(
+                    "correctness_mode='confusion_posterior' requires "
+                    "`annotator_confusion_matrices` from clf.predict_proba."
+                )
+
+        if self.correctness_mode in {
+            "annotator_perf",
+            "annotator_perf_posterior",
+            "auto",
+        }:
+            annotator_perf = self._predict_optional_extra_output(
+                clf=clf,
+                X=X_obs,
+                output_name="annotator_perf",
+                allow_missing=self.correctness_mode == "auto",
+            )
+            if annotator_perf is not None:
+                m_perf = self._take_observed_annotator_perf(
+                    annotator_perf=annotator_perf,
+                    obs_a=obs_a,
+                    n_annotators_total=n_annotators_total,
+                )
+                if self.correctness_mode == "annotator_perf_posterior":
+                    synthetic_confusions = (
+                        self._uniform_confusion_from_annotator_perf(
+                            theta=m_perf,
+                            n_classes=r_obs.shape[1],
+                        )
+                    )
+                    responsibility_obs = (
+                        self._confusion_posterior_responsibilities(
+                            r_obs=r_obs,
+                            pair_confusions=synthetic_confusions,
+                            y_obs_idx=y_obs_idx,
+                            eps=eps,
+                        )
+                    )
+                    m_perf_post = np.clip(
+                        responsibility_obs[np.arange(obs_a.size), y_obs_idx],
+                        0.0,
+                        1.0,
+                    )
+                    return (
+                        r_obs,
+                        X_obs_emb,
+                        m_perf_post,
+                        responsibility_obs,
+                        "annotator_perf_posterior",
+                    )
+                if self.correctness_mode == "annotator_perf":
+                    return (
+                        r_obs,
+                        X_obs_emb,
+                        m_perf,
+                        responsibility_obs,
+                        "annotator_perf",
+                    )
+            elif self.correctness_mode in {
+                "annotator_perf",
+                "annotator_perf_posterior",
+            }:
+                raise RuntimeError(
+                    f"correctness_mode='{self.correctness_mode}' requires "
+                    "`annotator_perf` from clf.predict_proba."
+                )
+
+        if m_perf is not None:
+            return (
+                r_obs,
+                X_obs_emb,
+                m_perf,
+                responsibility_obs,
+                "annotator_perf",
+            )
+        return (
+            r_obs,
+            X_obs_emb,
+            m_classifier,
+            responsibility_obs,
+            "classifier",
+        )
+
+    @staticmethod
+    def _predict_optional_extra_output(
+        *,
+        clf,
+        X,
+        output_name: str,
+        allow_missing: bool,
+    ):
+        try:
+            out = clf.predict_proba(X, extra_outputs=[output_name])
+        except Exception:
+            if allow_missing:
+                return None
+            raise
+
+        if not isinstance(out, (tuple, list)) or len(out) < 2:
+            raise ValueError(
+                f"clf.predict_proba must return `{output_name}` when requested."
+            )
+        return out[1]
+
+    @staticmethod
+    def _take_observed_annotator_perf(
+        *,
+        annotator_perf: np.ndarray,
+        obs_a: np.ndarray,
+        n_annotators_total: int,
+    ) -> np.ndarray:
+        annotator_perf = np.asarray(annotator_perf, dtype=float)
+        n_obs = obs_a.size
+        if annotator_perf.ndim != 2:
+            raise ValueError(
+                "`annotator_perf` must have shape "
+                "(n_obs_samples, n_annotators)."
+            )
+        if annotator_perf.shape[0] != n_obs:
+            raise ValueError(
+                "`annotator_perf` must match the number of observed pairs."
+            )
+        if annotator_perf.shape[1] != n_annotators_total:
+            raise ValueError(
+                "`annotator_perf` must include one column per annotator."
+            )
+        return np.clip(
+            annotator_perf[np.arange(n_obs), obs_a],
+            0.0,
+            1.0,
+        )
+
+    @staticmethod
+    def _uniform_confusion_from_annotator_perf(
+        *,
+        theta: np.ndarray,
+        n_classes: int,
+    ) -> np.ndarray:
+        theta = np.clip(np.asarray(theta, dtype=float), 0.0, 1.0)
+        if theta.ndim != 1:
+            raise ValueError("theta must be 1D for observed annotator pairs.")
+        if n_classes < 2:
+            raise ValueError("n_classes must be at least 2.")
+
+        n_obs = theta.shape[0]
+        off = (1.0 - theta) / (n_classes - 1)
+        C = np.full((n_obs, n_classes, n_classes), 0.0, dtype=float)
+        C[:] = off[:, None, None]
+        idx = np.arange(n_classes)
+        C[:, idx, idx] = theta[:, None]
+        return C
+
+    @staticmethod
+    def _take_observed_pair_confusions(
+        *,
+        confusion: np.ndarray,
+        obs_a: np.ndarray,
+        n_annotators_total: int,
+        eps: float,
+    ) -> np.ndarray:
+        confusion = np.asarray(confusion, dtype=float)
+        n_obs = obs_a.size
+        if confusion.ndim == 3:
+            if confusion.shape[0] != n_annotators_total:
+                raise ValueError(
+                    "`annotator_confusion_matrices` must include one matrix "
+                    "per annotator."
+                )
+            pair_confusions = confusion[obs_a]
+        elif confusion.ndim == 4:
+            if confusion.shape[0] != n_obs:
+                raise ValueError(
+                    "Sample-specific `annotator_confusion_matrices` must "
+                    "match the number of observed pairs."
+                )
+            if confusion.shape[1] != n_annotators_total:
+                raise ValueError(
+                    "Sample-specific `annotator_confusion_matrices` must "
+                    "include one matrix per annotator."
+                )
+            pair_confusions = confusion[np.arange(n_obs), obs_a]
+        else:
+            raise ValueError(
+                "`annotator_confusion_matrices` must have shape "
+                "(n_annotators, K, K) or (n_obs_samples, n_annotators, K, K)."
+            )
+
+        if pair_confusions.ndim != 3 or pair_confusions.shape[1] != pair_confusions.shape[2]:
+            raise ValueError(
+                "Observed annotator confusions must have shape (n_obs, K, K)."
+            )
+        pair_confusions = np.clip(pair_confusions, 0.0, None)
+        return pair_confusions / np.maximum(
+            pair_confusions.sum(axis=2, keepdims=True),
+            eps,
+        )
+
+    @staticmethod
+    def _confusion_posterior_responsibilities(
+        *,
+        r_obs: np.ndarray,
+        pair_confusions: np.ndarray,
+        y_obs_idx: np.ndarray,
+        eps: float,
+    ) -> np.ndarray:
+        emission = np.take_along_axis(
+            pair_confusions,
+            y_obs_idx[:, None, None],
+            axis=2,
+        ).squeeze(axis=2)
+        rho_num = r_obs * emission
+        rho_den = rho_num.sum(axis=1, keepdims=True)
+        rho = np.divide(
+            rho_num,
+            np.maximum(rho_den, eps),
+            out=np.zeros_like(rho_num),
+            where=rho_den > eps,
+        )
+        zero_mass = np.squeeze(rho_den, axis=1) <= eps
+        if np.any(zero_mass):
+            rho[zero_mass] = r_obs[zero_mass]
+        return rho
 
     def _resolve_class_prior(
         self,

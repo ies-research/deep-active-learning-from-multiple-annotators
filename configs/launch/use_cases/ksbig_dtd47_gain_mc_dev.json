@@ -1,0 +1,59 @@
+{
+  "name": "ksbig_dtd47_gain_mc_dev",
+  "description": "DTD47 development study for ks_big gain and Monte Carlo choices; update structural overrides after the structure block if needed",
+  "common_overrides": [
+    "dataset=dtd47",
+    "simulation=dtd47",
+    "al=dtd47",
+    "classifier=annot_mix",
+    "sample@sample.actual=margin",
+    "assigner@assigner.actual=greedy_sample",
+    "scorer@scorer.actual=ks_big_channel",
+    "experiment_name=ksbig_dtd47_gain_mc_dev",
+    "scorer.actual.channel_variant=channel",
+    "scorer.actual.correctness_mode=classifier",
+    "scorer.actual.gamma_x=median",
+    "scorer.actual.gamma_x_scope=global",
+    "scorer.actual.gamma_a=median",
+    "scorer.actual.use_ess_beta=true",
+    "scorer.actual.use_ess_label_dirichlet=true",
+    "scorer.actual.channel_wrong_label_mode=normalize",
+    "scorer.actual.annotator_lambda=0.8",
+    "scorer.actual.use_annotator_embeddings=true",
+    "scorer.actual.class_prior=kernel",
+    "scorer.actual.class_prior_strength=1.0",
+    "scorer.actual.class_prior_lambda=0.0",
+    "scorer.actual.use_ess_class_prior=true",
+    "scorer.actual.sample_class_prior=true",
+    "scorer.actual.sample_label_dirichlet=true"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "gain_type",
+      "type": "choices",
+      "values": {
+        "margin": {
+          "overrides": ["scorer.actual.gain_type=margin"]
+        },
+        "entropy": {
+          "overrides": ["scorer.actual.gain_type=entropy"]
+        },
+        "brier": {
+          "overrides": ["scorer.actual.gain_type=brier"]
+        }
+      }
+    },
+    {
+      "name": "n_mc_samples",
+      "type": "template",
+      "values": [0, 1, 5, 20],
+      "overrides": ["scorer.actual.n_mc_samples={value}"]
+    }
+  ]
+}
