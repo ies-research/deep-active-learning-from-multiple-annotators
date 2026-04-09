@@ -377,6 +377,7 @@ def experiment(cfg):
         db_path=to_absolute_path(cfg.results_path),
         artifact_root=to_absolute_path(cfg.results_path),
         steps=steps,
+        pre_write_jitter_max_seconds=cfg.mlflow_write_jitter_max_seconds,
     )
 
 

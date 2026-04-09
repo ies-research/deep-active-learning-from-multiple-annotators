@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import re
 import sqlite3
+import time
 import warnings
 from pathlib import Path
 from typing import (
@@ -19,7 +21,6 @@ from typing import (
 )
 
 import mlflow
-from filelock import FileLock
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 
@@ -311,12 +312,26 @@ def _resolve_mlflow_db_file(db_path: PathLike) -> Path:
     )
 
 
+def _apply_mlflow_write_jitter(max_seconds: float) -> float:
+    """Sleep for a random delay before SQLite-backed MLflow writes."""
+    if max_seconds <= 0:
+        return 0.0
+
+    delay = random.uniform(0.0, max_seconds)
+    time.sleep(delay)
+    return delay
+
+
 def _prepare_sqlite_db(db_file: Path) -> None:
-    """Create the parent directory and apply safer SQLite settings."""
+    """Create the parent directory and apply safer SQLite settings.
+
+    We avoid WAL mode here because this project may log from cluster jobs using
+    a shared filesystem, and WAL is not suitable for multi-host access.
+    """
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_file), timeout=30.0)
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA journal_mode=DELETE;")
         conn.execute("PRAGMA synchronous=FULL;")
         conn.execute("PRAGMA busy_timeout=30000;")
         conn.commit()
@@ -386,6 +401,7 @@ def log_results_to_mlflow(
     log_every: int = 1,
     also_log_cycle_metrics_artifact: bool = False,
     steps: Optional[Sequence[int]] = None,
+    pre_write_jitter_max_seconds: float = 0.0,
 ) -> None:
     """Log an experiment to MLflow (config + per-cycle metrics).
 
@@ -414,6 +430,9 @@ def log_results_to_mlflow(
         Full metrics can still be stored as an artifact.
     also_log_cycle_metrics_artifact : bool, default=True
         If True, log the full `cycle_metrics` list as a JSON artifact for exact reconstruction.
+    pre_write_jitter_max_seconds : float, default=0.0
+        Sleep for a random duration in `[0, max_seconds]` before touching the SQLite-backed
+        MLflow store. This can reduce bursty write collisions when many jobs finish together.
 
     Returns
     -------
@@ -426,35 +445,32 @@ def log_results_to_mlflow(
         pass
 
     db_file = _resolve_mlflow_db_file(db_path)
-    lock = FileLock(str(db_file) + ".lock", timeout=600)
+    _apply_mlflow_write_jitter(pre_write_jitter_max_seconds)
 
-    # Serialize writers around SQLite-backed MLflow operations to reduce the
-    # chance of corruption on shared or heavily contended storage.
-    with lock:
-        configure_mlflow_sqlite(
-            db_path=db_path,
-            experiment_name=experiment_name,
-            artifact_root=artifact_root,
+    configure_mlflow_sqlite(
+        db_path=db_path,
+        experiment_name=experiment_name,
+        artifact_root=artifact_root,
+    )
+
+    with mlflow.start_run(run_name=run_name):
+        log_hydra_config_to_mlflow(
+            cfg,
+            artifact_dir=config_artifact_dir,
+            log_params=log_config_params,
         )
 
-        with mlflow.start_run(run_name=run_name):
-            log_hydra_config_to_mlflow(
-                cfg,
-                artifact_dir=config_artifact_dir,
-                log_params=log_config_params,
-            )
+        if also_log_cycle_metrics_artifact:
+            # This is the "truth"; MLflow metrics are for plotting/querying.
+            mlflow.log_dict(list(cycle_metrics), "cycle_metrics.json")
 
-            if also_log_cycle_metrics_artifact:
-                # This is the "truth"; MLflow metrics are for plotting/querying.
-                mlflow.log_dict(list(cycle_metrics), "cycle_metrics.json")
+        if log_every <= 0:
+            raise ValueError("log_every must be >= 1.")
 
-            if log_every <= 0:
-                raise ValueError("log_every must be >= 1.")
-
-            steps = list(range(len(cycle_metrics))) if steps is None else steps
-            for step, m in zip(steps, cycle_metrics):
-                if step % log_every != 0:
-                    continue
-                safe = _sanitize_metrics(m)
-                if safe:
-                    mlflow.log_metrics(safe, step=step)
+        steps = list(range(len(cycle_metrics))) if steps is None else steps
+        for step, m in zip(steps, cycle_metrics):
+            if step % log_every != 0:
+                continue
+            safe = _sanitize_metrics(m)
+            if safe:
+                mlflow.log_metrics(safe, step=step)

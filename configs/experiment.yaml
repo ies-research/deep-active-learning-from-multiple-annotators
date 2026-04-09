@@ -21,6 +21,7 @@ defaults:
   - _self_
 experiment_name: "test"
 results_path: ${paths.results_path}
+mlflow_write_jitter_max_seconds: 60.0
 device: "cpu"
 missing_label: -1
 exit_after_simulation: False
