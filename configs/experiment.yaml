@@ -13,7 +13,7 @@ defaults:
   - sample@sample.init: random
   - sample@sample.actual: random
   - scorer@scorer.init: random
-  - scorer@scorer.actual: ks_big_channel
+  - scorer@scorer.actual: ks_bag_channel
   - assigner@assigner.init: quota_sample
   - assigner@assigner.actual: greedy_sample
   - override hydra/hydra_logging: disabled
