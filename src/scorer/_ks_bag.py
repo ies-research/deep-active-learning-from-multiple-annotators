@@ -17,7 +17,7 @@ def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return X / np.maximum(n, eps)
 
 
-class KernelSmoothedBayesianGain(PairScorer):
+class KernelSmoothedBayesianAnnotatorGain(PairScorer):
     """
     Pair scorer using expected uncertainty reduction under a
     kernel-smoothed annotator model.

@@ -1,13 +1,13 @@
 {
-  "name": "ksbig_dtd47_structure_dev",
-  "description": "DTD47 development study for ks_big structural choices",
+  "name": "ks_bag_dtd47_lambda_mc_dev",
+  "description": "DTD47 focused ks_bag development study for the coupled annotator_lambda and n_mc_samples hyperparameters",
   "common_overrides": [
     "al=dtd47",
     "classifier=annot_mix_gating",
     "paths=default",
     "dataset=dtd47",
-    "embedder@classification_embedder=dinov2",
-    "~embedder@simulation_embedder",
+    "embedder@classification_embedder=clip",
+    "embedder@simulation_embedder=dinov2",
     "pipeline=default",
     "simulation=dtd47",
     "module=mlp",
@@ -16,27 +16,34 @@
     "sample@sample.init=random",
     "sample@sample.actual=random",
     "scorer@scorer.init=random",
-    "scorer@scorer.actual=ks_big_channel",
+    "scorer@scorer.actual=ks_bag_channel",
     "assigner@assigner.init=quota_sample",
     "assigner@assigner.actual=greedy_sample",
     "hydra/hydra_logging=disabled",
     "hydra/job_logging=disabled",
-    "experiment_name=ksbig_dtd47_structure_dev",
+    "experiment_name=ks_bag_dtd47_lambda_mc_dev",
     "mlflow_write_jitter_max_seconds=60.0",
     "device=cpu",
     "missing_label=-1",
     "exit_after_simulation=false",
     "scorer.actual.channel_variant=channel",
     "scorer.actual.correctness_mode=classifier",
+    "scorer.actual.accuracy_mean=global_observed",
+    "scorer.actual.accuracy_strength=1.0",
     "scorer.actual.gamma_x=median",
     "scorer.actual.gamma_x_scope=global",
     "scorer.actual.gamma_a=median",
+    "scorer.actual.use_annotator_embeddings=false",
+    "scorer.actual.class_prior=kernel",
+    "scorer.actual.class_prior_strength=1.0",
+    "scorer.actual.class_prior_lambda=0.0",
+    "scorer.actual.use_ess_class_prior=true",
+    "scorer.actual.sample_class_prior=true",
     "scorer.actual.use_ess_beta=true",
     "scorer.actual.use_ess_label_dirichlet=true",
     "scorer.actual.sample_label_dirichlet=true",
     "scorer.actual.channel_wrong_label_mode=normalize",
-    "scorer.actual.gain_type=margin",
-    "scorer.actual.n_mc_samples=20"
+    "scorer.actual.gain_type=margin"
   ],
   "axes": [
     {
@@ -48,42 +55,14 @@
     {
       "name": "annotator_lambda",
       "type": "template",
-      "values": [0.0, 0.5, 0.8, 1.0],
+      "values": [0.0, 0.25, 0.5, 0.75, 1.0],
       "overrides": ["scorer.actual.annotator_lambda={value}"]
     },
     {
-      "name": "use_annotator_embeddings",
-      "type": "choices",
-      "values": {
-        "false": {
-          "overrides": ["scorer.actual.use_annotator_embeddings=false"]
-        },
-        "true": {
-          "overrides": ["scorer.actual.use_annotator_embeddings=true"]
-        }
-      }
-    },
-    {
-      "name": "class_prior_mode",
-      "type": "choices",
-      "values": {
-        "classifier": {
-          "overrides": [
-            "scorer.actual.class_prior=classifier",
-            "scorer.actual.use_ess_class_prior=false",
-            "scorer.actual.sample_class_prior=false"
-          ]
-        },
-        "kernel": {
-          "overrides": [
-            "scorer.actual.class_prior=kernel",
-            "scorer.actual.class_prior_strength=1.0",
-            "scorer.actual.class_prior_lambda=0.0",
-            "scorer.actual.use_ess_class_prior=true",
-            "scorer.actual.sample_class_prior=true"
-          ]
-        }
-      }
+      "name": "n_mc_samples",
+      "type": "template",
+      "values": [0, 1, 5, 10, 20],
+      "overrides": ["scorer.actual.n_mc_samples={value}"]
     }
   ]
 }

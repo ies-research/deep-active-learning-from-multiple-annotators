@@ -1,4 +1,4 @@
-_target_: src.scorer.KernelSmoothedBayesianGain
+_target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
 
 # Accuracy prior
 accuracy_mean: "per_annotator_observed"

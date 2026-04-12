@@ -1,7 +1,7 @@
-_target_: src.scorer.KernelSmoothedBayesianGain
+_target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
 
 # Accuracy prior
-accuracy_mean: 0.99
+accuracy_mean: "global_observed" # to be investigated
 accuracy_strength: 1.0 # to be investigated
 
 # Sample / annotator kernels
@@ -25,7 +25,7 @@ sample_class_prior: false # to be investigated
 # Posterior concentration / sampling
 use_ess_beta: true
 tau_beta: 1.0
-n_mc_samples: 20
+n_mc_samples: 10
 theta_ucb_quantile: null # use Beta posterior quantile when n_mc_samples <= 0
 
 # Utility

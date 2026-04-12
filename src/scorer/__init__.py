@@ -7,7 +7,7 @@ from ._diversity import (
 )
 from ._random import RandomPairScorer
 from ._bam import BetaModelPairScorer
-from ._ks_big import KernelSmoothedBayesianGain
+from ._ks_bag import KernelSmoothedBayesianAnnotatorGain
 
 
 __all__ = [
@@ -18,5 +18,5 @@ __all__ = [
     "RepresentationDiversityPairScorer",
     "RandomPairScorer",
     "BetaModelPairScorer",
-    "KernelSmoothedBayesianGain",
+    "KernelSmoothedBayesianAnnotatorGain",
 ]

@@ -1,0 +1,13 @@
+{
+  "name": "ks_bag",
+  "description": "Kernel-smoothed Bayesian annotator gain with greedy sample-aware assignment",
+  "tags": {
+    "method_family": "ks_bag",
+    "scorer_family": "ks_bag",
+    "assigner_family": "greedy_sample"
+  },
+  "overrides": [
+    "scorer@scorer.actual=ks_bag",
+    "assigner@assigner.actual=greedy_sample"
+  ]
+}
