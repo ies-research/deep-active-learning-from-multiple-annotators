@@ -6,7 +6,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-  echo "Usage: sbatch --array=0-8 slurm/prepare_datasets.sbatch [python_executable]" >&2
+  echo "Usage: sbatch --array=0-7 slurm/prepare_datasets.sbatch [python_executable]" >&2
   exit 1
 fi
 
@@ -34,21 +34,56 @@ fi
 
 DATASETS=(
   "dtd47"
+  "dtd47"
+  "dtd47"
+  "dtd47"
+  "dtd47"
+  "dtd47"
+  "dtd47"
+  "dtd47"
 )
 
 CLASSIFICATION_EMBEDDERS=(
+  "clip"
+  "clip"
+  "clip"
+  "clip"
+  "clip"
+  "clip"
+  "clip"
   "clip"
 )
 
 SIMULATION_EMBEDDERS=(
   "dinov2"
+  "dinov2"
+  "dinov2"
+  "dinov2"
+  "dinov2"
+  "dinov2"
+  "dinov2"
+  "dinov2"
 )
 
 SIMULATION_CONFIGS=(
-  "dtd47"
+  "dtd47_balanced_medium_40"
+  "dtd47_novice_heavy_40"
+  "dtd47_expert_novice_mix_40"
+  "dtd47_balanced_medium_10"
+  "dtd47_balanced_medium_80"
+  "dtd47_spammer_contaminated_40"
+  "dtd47_high_difficulty_specialist_40"
+  "dtd47_spammer_contaminated_10"
 )
 
 PREP_STEPS=(
+  "none"
+  "none"
+  "none"
+  "none"
+  "none"
+  "none"
+  "none"
   "none"
 )
 
