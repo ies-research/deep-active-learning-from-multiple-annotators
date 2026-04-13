@@ -1,31 +1,30 @@
 defaults:
-  - profile@_here_: hard
+  - profile@_here_: dtd47_high_difficulty_specialist
   - _self_
 
 _target_: src.dataset.MultiAnnotatorSimConfig
 
-seed: 6
-n_annotators: 20
+seed: 29
+n_annotators: 40
 allocation: deterministic
 missing_rate: 0.0
 missing_value: -1
 
 use_clusters: true
-n_clusters: 12
+n_clusters: 141
 kmeans_seed: 0
 k_means_max_iter: 100
 k_means_batch_size: 1024
 feature_preprocess: l2_normalize
 
 use_difficulty: true
-difficulty_k: 15
+difficulty_k: 21
 difficulty_metric: entropy
-difficulty_alpha: 1.0
+difficulty_alpha: 1.35
 use_knn_ambiguity: true
-knn_ambiguity_blend: 0.35
+knn_ambiguity_blend: 0.60
 knn_ambiguity_min_samples: 5
 
-# z_train caching (independent of embedder)
 cache_dir: ${paths.multi_annotator_cache_dir}
 cache_version: 1
 cache_store_metadata: true

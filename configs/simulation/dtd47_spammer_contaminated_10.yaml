@@ -1,0 +1,5 @@
+defaults:
+  - dtd47_spammer_contaminated
+  - _self_
+
+n_annotators: 10

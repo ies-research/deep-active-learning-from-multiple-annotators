@@ -1,0 +1,5 @@
+defaults:
+  - dtd47_balanced_medium
+  - _self_
+
+n_annotators: 80

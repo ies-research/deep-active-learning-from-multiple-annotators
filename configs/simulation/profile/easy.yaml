@@ -8,7 +8,7 @@ types:
     s_std: 0.15
     kappa_mean: 180
     kappa_std: 0.15
-    difficulty_beta_mean: 0.60
+    difficulty_beta_mean: 0.45
     difficulty_beta_std: 0.12
 
   - _target_: src.dataset.AnnotatorTypeConfig
@@ -20,7 +20,7 @@ types:
     s_std: 0.20
     kappa_mean: 110
     kappa_std: 0.20
-    difficulty_beta_mean: 1.00
+    difficulty_beta_mean: 0.80
     difficulty_beta_std: 0.15
 
   - _target_: src.dataset.AnnotatorTypeConfig
@@ -32,7 +32,7 @@ types:
     s_std: 0.25
     kappa_mean: 60
     kappa_std: 0.25
-    difficulty_beta_mean: 1.80
+    difficulty_beta_mean: 1.35
     difficulty_beta_std: 0.20
 
   - _target_: src.dataset.AnnotatorTypeConfig

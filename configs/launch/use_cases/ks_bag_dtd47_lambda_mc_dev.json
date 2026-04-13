@@ -1,6 +1,6 @@
 {
   "name": "ks_bag_dtd47_lambda_mc_dev",
-  "description": "DTD47 focused ks_bag development study for the coupled annotator_lambda and n_mc_samples hyperparameters",
+  "description": "DTD47 focused ks_bag development study for the coupled annotator_lambda and n_mc_samples hyperparameters across a 5-scenario annotator-robustness panel",
   "common_overrides": [
     "al=dtd47",
     "classifier=annot_mix_gating",
@@ -9,7 +9,6 @@
     "embedder@classification_embedder=clip",
     "embedder@simulation_embedder=dinov2",
     "pipeline=default",
-    "simulation=dtd47",
     "module=mlp",
     "training=default",
     "scheduler=step_ratio_1",
@@ -46,6 +45,27 @@
     "scorer.actual.gain_type=margin"
   ],
   "axes": [
+    {
+      "name": "simulation",
+      "type": "choices",
+      "values": {
+        "dtd47_balanced_medium_40": {
+          "overrides": ["simulation=dtd47_balanced_medium_40"]
+        },
+        "dtd47_novice_heavy_40": {
+          "overrides": ["simulation=dtd47_novice_heavy_40"]
+        },
+        "dtd47_expert_novice_mix_40": {
+          "overrides": ["simulation=dtd47_expert_novice_mix_40"]
+        },
+        "dtd47_balanced_medium_10": {
+          "overrides": ["simulation=dtd47_balanced_medium_10"]
+        },
+        "dtd47_balanced_medium_80": {
+          "overrides": ["simulation=dtd47_balanced_medium_80"]
+        }
+      }
+    },
     {
       "name": "seed",
       "type": "template",

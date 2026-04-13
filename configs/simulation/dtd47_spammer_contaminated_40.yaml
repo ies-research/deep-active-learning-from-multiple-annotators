@@ -1,0 +1,3 @@
+defaults:
+  - dtd47_spammer_contaminated
+  - _self_
