@@ -15,3 +15,4 @@ tau_label_dirichlet: 1.0
 n_theta_samples: 1
 sample_class_prior: false
 sample_label_dirichlet: false
+random_state: ${seed}
