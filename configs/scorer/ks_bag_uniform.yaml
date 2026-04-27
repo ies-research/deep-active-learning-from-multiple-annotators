@@ -4,12 +4,17 @@ _target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
 accuracy_mean: "global_observed" # to be investigated
 accuracy_strength: 1.0 # to be investigated
 
+# Correctness mode
+correctness_mode: "annotator_perf"
+observed_class_prior: "classifier" # classifier or kernel
+observed_class_prior_leave_one_out: false
+
 # Sample / annotator kernels
 gamma_x: "median" # to be investigated
-gamma_x_scope: "per_annotator" # to be investigated
+gamma_x_scope: "global" # to be investigated
 gamma_a: "median"
 use_annotator_embeddings: false
-annotator_lambda: 1.0 # redundant when gamma_x=0, kept for consistency
+annotator_lambda: 0.0 # redundant when gamma_x=0, kept for consistency
 
 # Channel model
 channel_variant: "scalar_uniform_confusion"
@@ -23,10 +28,11 @@ tau_class_prior: 1.0
 sample_class_prior: false # to be investigated
 
 # Posterior concentration / sampling
-use_ess_beta: true
+use_ess_beta: false
 tau_beta: 1.0
-n_mc_samples: 10
-theta_ucb_quantile: null # use Beta posterior quantile when n_mc_samples <= 0
+n_mc_samples: 0
+gain_ucb_quantile: null # use empirical gain posterior quantile when n_mc_samples > 0
 
 # Utility
-gain_type: margin
+gain_type: entropy
+random_state: ${seed}

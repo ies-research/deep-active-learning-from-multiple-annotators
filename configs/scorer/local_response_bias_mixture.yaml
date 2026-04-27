@@ -1,0 +1,35 @@
+_target_: src.scorer.LocalResponseBiasMixtureGain
+
+# Sample / annotator kernels
+gamma_x: "median"
+gamma_x_scope: "global"
+gamma_a: "median"
+use_annotator_embeddings: false
+annotator_lambda: 0.0
+
+# Latent class prior
+class_prior: "kernel"
+class_prior_strength: 1.0
+class_prior_lambda: 0.0
+use_ess_class_prior: true
+tau_class_prior: 1.0
+sample_class_prior: true
+
+# Local response-bias posterior
+response_dirichlet_strength: 1.0
+use_ess_response_dirichlet: true
+tau_response_dirichlet: 1.0
+sample_response_dirichlet: true
+
+# Local task-dependence posterior
+theta_alpha0: 1.0
+theta_beta0: 9.0
+theta_min_denom: 1e-6
+theta_ess_max: null
+tau_theta: 1.0
+
+# Gain aggregation
+n_mc_samples: 10
+gain_ucb_quantile: null
+gain_batch_size: 128
+random_state: ${seed}

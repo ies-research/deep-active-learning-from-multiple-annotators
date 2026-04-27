@@ -1,11 +1,13 @@
 _target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
 
 # Accuracy prior
-accuracy_mean: global_observed
+accuracy_mean: global_observed # to be investigated
 accuracy_strength: 1.0 # to be investigated
 
 # Correctness mode
 correctness_mode: "classifier"
+observed_class_prior: "classifier" # classifier or kernel
+observed_class_prior_leave_one_out: false
 
 # Sample / annotator kernels
 gamma_x: "median" # to be investigated
@@ -33,9 +35,11 @@ tau_beta: 1.0
 use_ess_label_dirichlet: true
 tau_label_dirichlet: 1.0 # to be investigated
 n_mc_samples: 10
-theta_ucb_quantile: null # use Beta posterior quantile when n_mc_samples <= 0
+gain_ucb_quantile: null # use empirical gain posterior quantile over MC draws
 sample_label_dirichlet: true # to be investigated
 
 # Approximation / utility
 top_m: null
-gain_type: margin # to be investigated
+gain_type: entropy # to be investigated
+entropy_response_cap: false
+random_state: ${seed}

@@ -1,0 +1,51 @@
+_target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
+
+# Accuracy prior
+accuracy_mean: global_observed # to be investigated
+accuracy_strength: 1.0
+
+# Correctness mode
+correctness_mode: "classifier"
+observed_class_prior: "kernel" # classifier or kernel
+observed_class_prior_leave_one_out: true
+
+# Sample / annotator kernels
+gamma_x: "median"
+gamma_x_scope: "global"
+gamma_a: "median"
+use_annotator_embeddings: false
+annotator_lambda: 0.0
+
+# Channel model with response-collapse mixture
+channel_variant: "pi_mixture_channel"
+channel_label_dirichlet_strength: 1.0
+channel_wrong_label_mode: "normalize"
+pi_mixture_kappa: 5.0
+pi_mixture_gamma: 2.0
+pi_mixture_max: 1.0
+
+# Latent class prior
+class_prior: "kernel"
+class_prior_strength: 1.0
+class_prior_lambda: 0.0
+use_ess_class_prior: true
+tau_class_prior: 1.0
+sample_class_prior: true
+
+# Posterior concentration / sampling
+use_ess_beta: true
+tau_beta: 1.0
+use_ess_label_dirichlet: true
+tau_label_dirichlet: 1.0
+n_mc_samples: 10
+gain_ucb_quantile: null
+sample_label_dirichlet: true
+
+# Approximation / utility
+top_m: null
+gain_type: entropy
+gain_batch_size: 128
+entropy_response_cap: false
+response_entropy_cap: false
+response_entropy_cap_lambda: 1.0
+random_state: ${seed}

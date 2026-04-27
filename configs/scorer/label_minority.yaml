@@ -1,0 +1,2 @@
+_target_: src.scorer.LabelMinorityPairScorer
+random_state: ${seed}

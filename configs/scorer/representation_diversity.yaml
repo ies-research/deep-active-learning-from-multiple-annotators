@@ -1,4 +1,7 @@
 _target_: src.scorer.RepresentationDiversityPairScorer
 label_weight: 1.0
+classes: null
+label_embeddings: null
 cold_start_score: 2.0
 eps: 1.0e-12
+random_state: ${seed}
