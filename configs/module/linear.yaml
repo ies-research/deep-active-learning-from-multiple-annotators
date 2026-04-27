@@ -1,3 +1,2 @@
 clf_module: src.module.MultiLayerPerceptron
-module__hidden_units: 0
-module__hidden_layers: 0
+module__hidden_units: []
