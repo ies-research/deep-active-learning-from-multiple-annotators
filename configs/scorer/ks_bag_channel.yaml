@@ -18,6 +18,8 @@ annotator_lambda: 0.0 # 0=local only, 1=global only
 
 # Channel model
 channel_variant: "channel" 
+full_confusion_prior_source: "accuracy"
+full_confusion_channel_prior_strength: 1.0
 channel_label_dirichlet_strength: 1.0 # to be investigated
 channel_wrong_label_mode: "normalize" # to be investigated
 
