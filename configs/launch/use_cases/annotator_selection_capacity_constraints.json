@@ -1,0 +1,156 @@
+{
+  "name": "annotator_selection_capacity_constraints",
+  "description": "Annotator-capacity robustness study for annotator-selection methods across the main benchmark datasets",
+  "common_overrides": [
+    "paths=default",
+    "pipeline=default",
+    "module=mlp",
+    "scheduler=step_ratio_1",
+    "sample@sample.init=random",
+    "scorer@scorer.init=random",
+    "assigner@assigner.init=quota_sample",
+    "hydra/hydra_logging=disabled",
+    "hydra/job_logging=disabled",
+    "mlflow_write_jitter_max_seconds=60.0",
+    "device=cpu",
+    "missing_label=-1",
+    "exit_after_simulation=false",
+    "experiment_name=annotator_selection_capacity_constraints",
+    "classifier=annot_mix_gating",
+    "training=default",
+    "sample@sample.actual=random"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ],
+      "overrides": [
+        "seed={value}"
+      ]
+    },
+    {
+      "name": "dataset",
+      "type": "choices",
+      "values": {
+        "audiomnist10": {
+          "overrides": [
+            "dataset=audiomnist10",
+            "al=audiomnist10",
+            "simulation=audiomnist10",
+            "embedder@classification_embedder=wav2vec",
+            "embedder@simulation_embedder=wavlm"
+          ]
+        },
+        "banking77": {
+          "overrides": [
+            "dataset=banking77",
+            "al=banking77",
+            "simulation=banking77",
+            "embedder@classification_embedder=mpnetv2",
+            "embedder@simulation_embedder=minilmv2"
+          ]
+        },
+        "dermamnist7": {
+          "overrides": [
+            "dataset=dermamnist7",
+            "al=dermamnist7",
+            "simulation=dermamnist7",
+            "embedder@classification_embedder=dinov2",
+            "embedder@simulation_embedder=clip"
+          ]
+        },
+        "dopanim": {
+          "overrides": [
+            "dataset=dopanim",
+            "al=dopanim",
+            "~simulation",
+            "embedder@classification_embedder=dinov2",
+            "~embedder@simulation_embedder"
+          ]
+        },
+        "food101": {
+          "overrides": [
+            "dataset=food101",
+            "al=food101",
+            "simulation=food101",
+            "embedder@classification_embedder=dinov2",
+            "embedder@simulation_embedder=clip"
+          ]
+        },
+        "skits2i14": {
+          "overrides": [
+            "dataset=skits2i14",
+            "al=skits2i14",
+            "simulation=skits2i14",
+            "embedder@classification_embedder=wav2vec",
+            "embedder@simulation_embedder=wavlm"
+          ]
+        },
+        "trec6": {
+          "overrides": [
+            "dataset=trec6",
+            "al=trec6",
+            "simulation=trec6",
+            "embedder@classification_embedder=mpnetv2",
+            "embedder@simulation_embedder=minilmv2"
+          ]
+        }
+      }
+    },
+    {
+      "name": "constraint",
+      "type": "choices",
+      "values": {
+        "none": {
+          "overrides": [
+            "al.annotator_capacity.mode=none",
+            "al.annotator_capacity.multiplier=1.0"
+          ]
+        },
+        "relative_equal_share_1_0": {
+          "overrides": [
+            "al.annotator_capacity.mode=relative_equal_share",
+            "al.annotator_capacity.multiplier=1.0"
+          ]
+        },
+        "relative_equal_share_1_5": {
+          "overrides": [
+            "al.annotator_capacity.mode=relative_equal_share",
+            "al.annotator_capacity.multiplier=1.5"
+          ]
+        }
+      }
+    },
+    {
+      "name": "method",
+      "type": "registry",
+      "values": [
+        "ks_bag",
+        "ig_gain",
+        "performance"
+      ]
+    }
+  ]
+}
