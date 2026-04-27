@@ -25,9 +25,11 @@ def _score_from_posterior(
         return 1.0 - (P_sorted[..., -1] - P_sorted[..., -2])
     if score == "brier":
         return 1.0 - np.sum(P * P, axis=-1)
+    if score == "confidence":
+        return 1.0 - np.max(P, axis=-1)
     raise ValueError(
         f"Unknown score={score!r}. Expected one of "
-        "{'entropy', 'margin', 'brier'}."
+        "{'entropy', 'margin', 'brier', 'confidence'}."
     )
 
 
@@ -69,7 +71,7 @@ def expected_score_gain(
     C : np.ndarray or None, default=None
         Confusion mode only. Confusion matrices with shape
         `(..., n_classes, n_classes)`.
-    score : {"entropy", "margin", "brier"}, default="entropy"
+    score : {"entropy", "margin", "brier", "confidence"}, default="entropy"
         Uncertainty score reduced in expectation after observing a label.
     eps : float, default=1e-12
         Numerical stability constant for clipping before logs/divisions.
@@ -91,9 +93,10 @@ def expected_score_gain(
         - confusion mode: `P.shape[:-1]`.
     """
     score = str(score).lower()
-    if score not in {"entropy", "margin", "brier"}:
+    if score not in {"entropy", "margin", "brier", "confidence"}:
         raise ValueError(
-            "score must be one of {'entropy', 'margin', 'brier'}."
+            "score must be one of "
+            "{'entropy', 'margin', 'brier', 'confidence'}."
         )
     if batch_size is not None and batch_size <= 0:
         raise ValueError("batch_size must be > 0 when provided.")
@@ -283,6 +286,30 @@ def brier_score_gain(
     )
 
 
+def confidence_gain(
+    P: np.ndarray,
+    P_perf: np.ndarray | None = None,
+    P_annot: np.ndarray | None = None,
+    *,
+    C: np.ndarray | None = None,
+    eps: float = 1e-12,
+    normalize: bool = True,
+    check_input: bool = True,
+    batch_size: int | None = None,
+) -> np.ndarray:
+    return expected_score_gain(
+        P,
+        P_perf=P_perf,
+        P_annot=P_annot,
+        C=C,
+        score="confidence",
+        eps=eps,
+        normalize=normalize,
+        check_input=check_input,
+        batch_size=batch_size,
+    )
+
+
 def _channel_confusion_from_theta_g_batch(
     *,
     theta: np.ndarray,
@@ -378,7 +405,7 @@ def _score_gain_from_confusion_batch(
     check_input : bool, default=True
         If True, validate input shapes.
 
-    score : {"entropy", "margin", "brier"}, default="entropy"
+    score : {"entropy", "margin", "brier", "confidence"}, default="entropy"
         Uncertainty score reduced in expectation.
     Returns
     -------
@@ -427,6 +454,6 @@ def _score_gain_from_confusion_batch(
     )
     conditional_score = (py * post_scores).sum(axis=-1)
     gain = prior_score - conditional_score
-    if score in {"entropy", "brier"}:
+    if score in {"entropy", "brier", "confidence"}:
         gain = np.maximum(gain, 0.0)
     return gain

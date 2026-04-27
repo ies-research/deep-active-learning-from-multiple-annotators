@@ -33,6 +33,7 @@ class InformationGainPairScorer(PairScorer):
     - ``"entropy"``: standard information gain.
     - ``"margin"``: expected reduction in margin-based uncertainty.
     - ``"brier"``: expected reduction in multiclass Brier uncertainty.
+    - ``"confidence"``: expected increase in maximum posterior probability.
     """
 
     def __init__(
@@ -79,9 +80,10 @@ class InformationGainPairScorer(PairScorer):
             raise ValueError(
                 "class_prior must be one of {'classifier', 'uniform'}."
             )
-        if self.gain_type not in {"entropy", "margin", "brier"}:
+        if self.gain_type not in {"entropy", "margin", "brier", "confidence"}:
             raise ValueError(
-                "gain_type must be one of {'entropy', 'margin', 'brier'}."
+                "gain_type must be one of "
+                "{'entropy', 'margin', 'brier', 'confidence'}."
             )
 
         n_sel_s = len(sample_indices)
