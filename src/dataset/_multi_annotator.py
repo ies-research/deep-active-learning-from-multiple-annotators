@@ -201,6 +201,15 @@ class MultiAnnotatorSimConfig:
     cache_store_metadata: bool = True
 
 
+def _as_1d_int_labels(y: np.ndarray, *, name: str = "y") -> np.ndarray:
+    y = np.asarray(y, dtype=np.int64)
+    if y.ndim == 1:
+        return y
+    if y.ndim == 2 and y.shape[1] == 1:
+        return y.reshape(-1)
+    raise ValueError(f"{name} must have shape (N,) or (N, 1), got {y.shape}.")
+
+
 def hash_y_train(y_train: np.ndarray) -> str:
     """
     Hash the exact `y_train` byte representation to bind cache to
@@ -216,9 +225,7 @@ def hash_y_train(y_train: np.ndarray) -> str:
     y_hash:
         SHA1 hex digest of y_train bytes.
     """
-    y = np.asarray(y_train)
-    if y.dtype != np.int64:
-        y = y.astype(np.int64, copy=False)
+    y = _as_1d_int_labels(y_train, name="y_train")
     return sha1_bytes(y.tobytes())
 
 
@@ -476,7 +483,7 @@ def compute_knn_label_distribution(
     distribution among its k nearest neighbors (excluding the sample itself).
     """
     X = np.asarray(X)
-    y = np.asarray(y, dtype=np.int64)
+    y = _as_1d_int_labels(y, name="y")
     N = int(y.shape[0])
 
     if X.ndim != 2:
@@ -608,7 +615,7 @@ def build_cluster_ambiguity_templates(
     """
     knn_probs = np.asarray(knn_probs, dtype=np.float32)
     cluster_id = np.asarray(cluster_id, dtype=np.int64)
-    y_true = np.asarray(y_true, dtype=np.int64)
+    y_true = _as_1d_int_labels(y_true, name="y_true")
 
     G = int(n_clusters)
     K = int(n_classes)
@@ -890,7 +897,7 @@ def simulate_labels(
     """
     rng = np.random.default_rng(seed)
 
-    y_true = np.asarray(y_true, dtype=np.int64)
+    y_true = _as_1d_int_labels(y_true, name="y_true")
     cluster_id = np.asarray(cluster_id, dtype=np.int64)
     difficulty = np.asarray(difficulty, dtype=np.float32)
     beta = np.asarray(beta, dtype=np.float32)
@@ -988,7 +995,7 @@ def simulate_multi_annotator_labels_from_features(
     X_sim = _preprocess_simulation_features(
         X_features, mode=cfg.feature_preprocess
     )
-    y_true = np.asarray(y_true, dtype=np.int64)
+    y_true = _as_1d_int_labels(y_true, name="y_true")
     K = int(np.unique(y_true).size)
 
     if cfg.use_clusters:

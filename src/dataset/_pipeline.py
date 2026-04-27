@@ -18,6 +18,15 @@ from ._utils import (
 from ._cache import sha1_json, npz_load, npz_save
 
 
+def _as_1d_int_labels(y: np.ndarray, *, name: str = "y") -> np.ndarray:
+    y = np.asarray(y, dtype=np.int64)
+    if y.ndim == 1:
+        return y
+    if y.ndim == 2 and y.shape[1] == 1:
+        return y.reshape(-1)
+    raise ValueError(f"{name} must have shape (N,) or (N, 1), got {y.shape}.")
+
+
 @dataclass
 class PipelineConfig:
     """
@@ -269,7 +278,7 @@ class HFNumpyFeaturePipeline:
         self._debug(f"_load_cached_split[{split_name}]: cache hit")
         X = np.load(X_path, mmap_mode=self.cfg.mmap_mode)
         meta = npz_load(meta_path)
-        return X, meta["y"], meta.get("z")
+        return X, _as_1d_int_labels(meta["y"], name="y"), meta.get("z")
 
     def _compute_or_load_split(
         self,
@@ -343,7 +352,10 @@ class HFNumpyFeaturePipeline:
                     "get_arrays() before extracting split labels."
                 )
         else:
-            y = self.label_encoder_.transform(split_ds[self.spec.y_key])
+            y = _as_1d_int_labels(
+                self.label_encoder_.transform(split_ds[self.spec.y_key]),
+                name="y",
+            )
 
         z = None
         if (
