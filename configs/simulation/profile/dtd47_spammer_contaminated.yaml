@@ -13,7 +13,7 @@ types:
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: competent
-    proportion: 0.45
+    proportion: 0.35
     q_mean: 0.68
     q_std: 0.05
     s_mean: 65
@@ -37,10 +37,10 @@ types:
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: spammer_uniform
-    proportion: 0.20
+    proportion: 0.175
     spammer_mode: uniform
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: spammer_single
-    proportion: 0.20
+    proportion: 0.175
     spammer_mode: single_class

@@ -37,5 +37,10 @@ types:
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: spammer_uniform
-    proportion: 0.10
+    proportion: 0.05
     spammer_mode: uniform
+
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: spammer_single
+    proportion: 0.05
+    spammer_mode: single_class

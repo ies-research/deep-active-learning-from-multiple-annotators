@@ -1,6 +1,6 @@
 n_cycles: 25
-init_pair_budget: 320
-actual_pair_budget: 320
+init_pair_budget: 240
+actual_pair_budget: 240
 annotator_capacity:
   mode: none
   multiplier: 1.0
