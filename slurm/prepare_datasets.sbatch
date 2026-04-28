@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=prepare-dataset-artifacts
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 
@@ -17,6 +18,7 @@ mkdir -p slurm/logs
 
 DATA_ROOT="${DALC_DATA_ROOT:-}"
 RESULTS_ROOT="${DALC_RESULTS_ROOT:-${DALCE_RESULTS_ROOT:-}}"
+PREP_DEVICE="${DALC_PREP_DEVICE:-cuda}"
 
 PYTHON_BIN="${1:-python}"
 
@@ -120,7 +122,12 @@ CMD=(
   "dataset=${DATASET}"
   "embedder@classification_embedder=${CLASSIFICATION_EMBEDDER}"
   "exit_after_simulation=True"
+  "device=${PREP_DEVICE}"
 )
+
+if [[ "${CLASSIFICATION_EMBEDDER}" != "identity_tabular" ]]; then
+  CMD+=("classification_embedder.device=${PREP_DEVICE}")
+fi
 
 if [[ -n "${DATA_ROOT}" ]]; then
   CMD+=("paths.master_dir=${DATA_ROOT}")
@@ -140,6 +147,9 @@ if [[ "${SIMULATION_EMBEDDER}" == "null" ]]; then
   CMD+=("~embedder@simulation_embedder")
 else
   CMD+=("embedder@simulation_embedder=${SIMULATION_EMBEDDER}")
+  if [[ "${SIMULATION_EMBEDDER}" != "identity_tabular" ]]; then
+    CMD+=("simulation_embedder.device=${PREP_DEVICE}")
+  fi
 fi
 
 "${CMD[@]}"
