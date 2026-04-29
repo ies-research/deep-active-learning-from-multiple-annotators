@@ -118,6 +118,7 @@ try:
             "embeddings",
             "annotator_perf",
             "annotator_class",
+            "annotator_confusion_matrices",
             "annotator_embeddings",
         }
 
@@ -195,6 +196,9 @@ try:
                 - "annotator_class" : Additionally return the annotator–class
                   probability estimates `P_annot` for each sample, class, and
                   annotator.
+                - "annotator_confusion_matrices" : Additionally return the
+                  annotator confusion matrices `C_annot` for each sample and
+                  annotator.
                 - "annotator_embeddings" : Additionally return the
                   learned embeddings `A_embed` for the annotators as the next
                   element of the output tuple.
@@ -224,6 +228,11 @@ try:
                   `(n_samples, n_annotators, n_classes)`, where
                   `P_annot[n, m, c]` refers to the probability that annotator
                   `m` provides the class label `c` for sample `X[n]`.
+                - `C_annot` : `np.ndarray` of shape
+                  `(n_samples, n_annotators, n_classes, n_classes)`, where
+                  `C_annot[n, m, i, j]` refers to the probability that
+                  annotator `m` outputs class `j` if the true class is `i`
+                  for sample `X[n]`.
                 - `A_embed` : `np.ndarray` of shape
                   `(n_annotators, annotator_embed_dim)`, where `A_embed[m]`
                   refers to the learned embedding for annotator `m`.
@@ -265,6 +274,9 @@ try:
                 - "annotator_class" : Additionally return the annotator–class
                   probability estimates `P_annot` for each sample, class, and
                   annotator.
+                - "annotator_confusion_matrices" : Additionally return the
+                  annotator confusion matrices `C_annot` for each sample and
+                  annotator.
                 - "annotator_embeddings" : Additionally return the
                   learned embeddings `A_embed` for the annotators as the next
                   element of the output tuple.
@@ -295,6 +307,11 @@ try:
                   `(n_samples, n_annotators, n_classes)`, where
                   `P_annot[n, m, c]` refers to the probability that annotator
                   `m` provides the class label `c` for sample `X[n]`.
+                - `C_annot` : `np.ndarray` of shape
+                  `(n_samples, n_annotators, n_classes, n_classes)`, where
+                  `C_annot[n, m, i, j]` refers to the probability that
+                  annotator `m` outputs class `j` if the true class is `i`
+                  for sample `X[n]`.
                 - `A_embed` : `np.ndarray` of shape
                   `(n_annotators, annotator_embed_dim)`, where `A_embed[m]`
                   refers to the learned embedding for annotator `m`.
@@ -356,6 +373,24 @@ try:
                     _transform_annotator_class,
                 )
                 forward_returns.append("log_p_annotator_class")
+                out_idx += 1
+
+            if "annotator_confusion_matrices" in extra_outputs:
+
+                def _transform_annotator_confusion_matrices(C_annot):
+                    C_annot = C_annot.exp()
+                    return C_annot.reshape(
+                        -1,
+                        self.n_annotators_,
+                        len(self.classes_),
+                        len(self.classes_),
+                    )
+
+                forward_outputs["annotator_confusion_matrices"] = (
+                    out_idx,
+                    _transform_annotator_confusion_matrices,
+                )
+                forward_returns.append("log_p_annotator_confusion_matrices")
                 out_idx += 1
 
             if "annotator_embeddings" in extra_outputs:
@@ -582,6 +617,7 @@ try:
             "a_embed",
             "log_p_annotator_class",
             "log_p_annotator_perf",
+            "log_p_annotator_confusion_matrices",
         )
 
         def __init__(
@@ -609,6 +645,7 @@ try:
                     "a_embed",
                     "log_p_annotator_class",
                     "log_p_annotator_perf",
+                    "log_p_annotator_confusion_matrices",
                 ],
             )
             # Define integer variables.
@@ -688,8 +725,9 @@ try:
 
                 - `"logits_class"`,
                 - `"x_embed"`,
-                - "log_p_annotator_class"`
-                - "log_p_annotator_perf"`
+                - "log_p_annotator_perf"`,
+                - "log_p_annotator_class"`,
+                - "log_p_annotator_confusion_matrices"`,
                 - `"a_embed"`.
             """
             # Obtain classifier outputs.
@@ -708,6 +746,7 @@ try:
                     "a_embed",
                     "log_p_annotator_class",
                     "log_p_annotator_perf",
+                    "log_p_annotator_confusion_matrices",
                 )
             )
             if need_annotator_output:
@@ -770,6 +809,9 @@ try:
                         p_class_log[:, :, None] + p_conf_log, dim=1
                     )
                     out.append(log_p_annotator_class)
+
+                if "log_p_annotator_confusion_matrices" in self.forward_return:
+                    out.append(p_conf_log)
 
                 if "a_embed" in self.forward_return:
                     out.append(a_embed_return)
