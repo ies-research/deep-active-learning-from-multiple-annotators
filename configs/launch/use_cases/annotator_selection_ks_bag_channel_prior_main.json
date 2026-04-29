@@ -185,8 +185,8 @@
             "method_family": "reliability"
           }
         },
-        "ig_gain": {
-          "overrides": ["scorer@scorer.actual=ig_gain"],
+        "ig": {
+          "overrides": ["scorer@scorer.actual=ig"],
           "tags": {
             "method_family": "information_gain"
           }

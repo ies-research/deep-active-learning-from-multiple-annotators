@@ -1,0 +1,3 @@
+_target_: src.scorer.InformationGainPairScorer
+channel_variant: "full_confusion"
+class_prior: "classifier"
