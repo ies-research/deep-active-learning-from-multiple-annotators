@@ -1,0 +1,137 @@
+{
+  "name": "ks_bag_dtd47_annotator_lambda_ablation",
+  "description": "DTD47 KS-BAG Block B ablation over annotator-response locality with fixed global gamma_x_scope",
+  "common_overrides": [
+    "al=dtd47",
+    "paths=default",
+    "dataset=dtd47",
+    "embedder@classification_embedder=clip",
+    "embedder@simulation_embedder=dinov2",
+    "pipeline=default",
+    "module=mlp",
+    "training=default",
+    "scheduler=step_ratio_1",
+    "sample@sample.init=random",
+    "sample@sample.actual=random",
+    "scorer@scorer.init=random",
+    "scorer@scorer.actual=ks_bag_full_confusion_channel_prior",
+    "assigner@assigner.init=quota_sample",
+    "assigner@assigner.actual=greedy_sample",
+    "hydra/hydra_logging=disabled",
+    "hydra/job_logging=disabled",
+    "experiment_name=ks_bag_dtd47_annotator_lambda_ablation",
+    "mlflow_write_jitter_max_seconds=60.0",
+    "device=cpu",
+    "missing_label=-1",
+    "exit_after_simulation=false",
+    "scorer.actual.correctness_mode=classifier",
+    "scorer.actual.channel_variant=full_confusion",
+    "scorer.actual.full_confusion_prior_source=channel",
+    "scorer.actual.full_confusion_prior_strength=3.0",
+    "scorer.actual.accuracy_mean=global_observed",
+    "scorer.actual.accuracy_strength=1.0",
+    "scorer.actual.gamma_x=median",
+    "scorer.actual.gamma_x_scope=global",
+    "scorer.actual.gamma_a=median",
+    "scorer.actual.use_annotator_embeddings=false",
+    "scorer.actual.class_prior=kernel",
+    "scorer.actual.class_prior_strength=1.0",
+    "scorer.actual.class_prior_lambda=0.0",
+    "scorer.actual.use_ess_class_prior=true",
+    "scorer.actual.tau_class_prior=1.0",
+    "scorer.actual.sample_class_prior=true",
+    "scorer.actual.use_ess_beta=true",
+    "scorer.actual.tau_beta=1.0",
+    "scorer.actual.use_ess_label_dirichlet=true",
+    "scorer.actual.tau_label_dirichlet=1.0",
+    "scorer.actual.sample_label_dirichlet=true",
+    "scorer.actual.channel_label_dirichlet_strength=1.0",
+    "scorer.actual.channel_wrong_label_mode=normalize",
+    "scorer.actual.top_m=null",
+    "scorer.actual.full_confusion_reduce_top_m=null",
+    "scorer.actual.confusion_parameter_gain_weight=0.0",
+    "scorer.actual.gain_type=entropy",
+    "scorer.actual.n_mc_samples=10",
+    "scorer.actual.gain_ucb_quantile=null"
+  ],
+  "axes": [
+    {
+      "name": "simulation",
+      "type": "choices",
+      "values": {
+        "dtd47_balanced_medium_10": {
+          "overrides": ["simulation=dtd47_balanced_medium_10"]
+        },
+        "dtd47_balanced_medium_40": {
+          "overrides": ["simulation=dtd47_balanced_medium_40"]
+        },
+        "dtd47_balanced_medium_80": {
+          "overrides": ["simulation=dtd47_balanced_medium_80"]
+        },
+        "dtd47_novice_heavy_40": {
+          "overrides": ["simulation=dtd47_novice_heavy_40"]
+        },
+        "dtd47_spammer_contaminated_40": {
+          "overrides": ["simulation=dtd47_spammer_contaminated_40"]
+        }
+      }
+    },
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "classifier",
+      "type": "choices",
+      "values": {
+        "majority_voting": {
+          "overrides": ["classifier=majority_voting"],
+          "tags": {
+            "classifier_noise_model": "none"
+          }
+        },
+        "geo_reg_f": {
+          "overrides": ["classifier=geo_reg_f"],
+          "tags": {
+            "classifier_noise_model": "class_dependent"
+          }
+        },
+        "annot_mix_gating": {
+          "overrides": ["classifier=annot_mix_gating"],
+          "tags": {
+            "classifier_noise_model": "instance_class_dependent"
+          }
+        }
+      }
+    },
+    {
+      "name": "annotator_lambda",
+      "type": "choices",
+      "values": {
+        "local_0_0": {
+          "overrides": ["scorer.actual.annotator_lambda=0.0"],
+          "tags": {
+            "ablation_block": "annotator_locality",
+            "simplicity_rank": "1"
+          }
+        },
+        "mixed_0_5": {
+          "overrides": ["scorer.actual.annotator_lambda=0.5"],
+          "tags": {
+            "ablation_block": "annotator_locality",
+            "simplicity_rank": "2"
+          }
+        },
+        "global_1_0": {
+          "overrides": ["scorer.actual.annotator_lambda=1.0"],
+          "tags": {
+            "ablation_block": "annotator_locality",
+            "simplicity_rank": "1"
+          }
+        }
+      }
+    }
+  ]
+}
