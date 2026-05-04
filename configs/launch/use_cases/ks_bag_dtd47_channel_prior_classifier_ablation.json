@@ -1,6 +1,6 @@
 {
   "name": "ks_bag_dtd47_channel_prior_classifier_ablation",
-  "description": "DTD47 KS-BAG ablation for channel-informed full-confusion priors across annotator regimes and classifier noise models",
+  "description": "DTD47 KS-BAG Block A response-model ablation for channel-informed full-confusion priors across annotator regimes and classifier noise models",
   "common_overrides": [
     "al=dtd47",
     "paths=default",
@@ -128,19 +128,6 @@
             "scorer.actual.accuracy_mean=global_observed",
             "scorer.actual.accuracy_strength=3.0",
             "scorer.actual.use_ess_beta=false",
-            "scorer.actual.use_ess_label_dirichlet=true"
-          ]
-        },
-        "full_confusion_channel_prior_s0_3": {
-          "overrides": [
-            "scorer.actual.channel_variant=full_confusion",
-            "scorer.actual.full_confusion_prior_source=channel",
-            "scorer.actual.full_confusion_channel_prior_strength=0.3",
-            "scorer.actual.accuracy_mean=global_observed",
-            "scorer.actual.accuracy_strength=1.0",
-            "scorer.actual.channel_label_dirichlet_strength=1.0",
-            "scorer.actual.channel_wrong_label_mode=normalize",
-            "scorer.actual.use_ess_beta=true",
             "scorer.actual.use_ess_label_dirichlet=true"
           ]
         },
