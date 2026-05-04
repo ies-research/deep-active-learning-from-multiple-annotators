@@ -130,11 +130,14 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         Symmetric Dirichlet prior concentration for the fallback label
         distribution `g` in `channel_variant` values that use a local response
         distribution (`"channel"` and `"pi_mixture_channel"`).
-    gain_type : {"entropy", "margin", "brier", "confidence"}, default="entropy"
+    gain_type : {"entropy", "margin", "brier", "confidence", /
+            "expected_accuracy"}, default="entropy"
         Uncertainty functional reduced in expectation after observing an
         annotator label. ``"entropy"`` recovers standard information gain.
         ``"confidence"`` is the expected increase in maximum posterior
-        class probability.
+        class probability. ``"expected_accuracy"`` selects annotators by the
+        class-prior-weighted diagonal of the inferred confusion matrix,
+        ``sum_z p(z|x) C[z,z]``, under the active `channel_variant`.
     entropy_response_cap : bool, default=False
         If True and `gain_type="entropy"`, cap each entropy-gain draw by the
         upper bound ``min(H(class), H(response))``. For `channel`, response
@@ -325,7 +328,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         pi_mixture_gamma: float = 2.0,
         pi_mixture_max: float = 1.0,
         gain_batch_size: int | None = None,
-        profile_timing: bool = False,
+        profile_timing: bool = True,
         channel_wrong_label_mode: str = "normalize",
         random_state=None,
     ):
@@ -554,10 +557,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 "observed_class_prior_leave_one_out=True requires "
                 "observed_class_prior='kernel'"
             )
-        if self.gain_type not in {"entropy", "margin", "brier", "confidence"}:
+        if self.gain_type not in {
+            "entropy",
+            "margin",
+            "brier",
+            "confidence",
+            "expected_accuracy",
+        }:
             raise ValueError(
                 "gain_type must be one of "
-                "{'entropy', 'margin', 'brier', 'confidence'}"
+                "{'entropy', 'margin', 'brier', 'confidence', "
+                "'expected_accuracy'}"
             )
         if self.class_prior_strength <= 0:
             raise ValueError("class_prior_strength must be > 0")
@@ -723,6 +733,27 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         pieces = [f"{name}={seconds:.4f}s" for name, seconds in timings.items()]
         print("[ks_bag profile] " + ", ".join(pieces))
 
+    def _uses_instance_independent_response_fast_path(self) -> bool:
+        return bool(np.isclose(self.annotator_lambda, 1.0))
+
+    @staticmethod
+    def _broadcast_candidate_axis(
+        value: np.ndarray,
+        n_candidates: int,
+    ) -> np.ndarray:
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim == 0:
+            raise ValueError("candidate parameter must have at least one axis.")
+        if arr.shape[0] == n_candidates:
+            return arr
+        if arr.shape[0] != 1:
+            raise ValueError(
+                "Can only broadcast candidate parameters with a singleton "
+                f"candidate axis, got shape {arr.shape} for "
+                f"{n_candidates} candidates."
+            )
+        return np.broadcast_to(arr, (n_candidates, *arr.shape[1:])).copy()
+
     def _compute(
         self,
         X,
@@ -741,6 +772,8 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         profile = self._profile_enabled()
         timings: dict[str, float] = {}
         t_total = time.perf_counter()
+        n_candidates = len(sample_indices)
+        response_fast_path = self._uses_instance_independent_response_fast_path()
 
         classes = clf.classes_
         K = len(classes)
@@ -900,13 +933,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         if profile:
             self._profile_add(timings, "class_prior", t0)
 
-        # Local sample-kernel weights from observed pairs to candidate samples.
-        t0 = time.perf_counter()
-        Kx_obs_cand_local_global = rbf_kernel(
-            X_obs_emb, X_cand_emb, gamma=gamma_x_global
-        )
-        if profile:
-            self._profile_add(timings, "sample_kernel", t0)
+        # Local response-model sample kernels are unnecessary when the
+        # annotator response model is explicitly instance-independent.
+        if response_fast_path:
+            Kx_obs_cand_local_global = None
+        else:
+            t0 = time.perf_counter()
+            Kx_obs_cand_local_global = rbf_kernel(
+                X_obs_emb, X_cand_emb, gamma=gamma_x_global
+            )
+            if profile:
+                self._profile_add(timings, "sample_kernel", t0)
 
         if self._accuracy_mean_mode == "fixed":
             prior_acc_global = float(self.accuracy_mean)
@@ -927,10 +964,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         )
 
         U = np.empty(
-            (len(sample_indices), len(annotator_indices)), dtype=float
+            (n_candidates, len(annotator_indices)), dtype=float
         )
         obs_indices_by_annotator = None
-        if self.channel_variant == "full_confusion" and not use_annotator_kernel:
+        if (
+            (response_fast_path or self.channel_variant == "full_confusion")
+            and not use_annotator_kernel
+        ):
             obs_indices_by_annotator = [
                 np.flatnonzero(obs_a == idx)
                 for idx in range(n_annotators_total)
@@ -961,31 +1001,6 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 beta0 = beta0_global
                 delta0_full = delta0_full_global
 
-            if self.gamma_x_scope == "per_annotator":
-                obs_mask_a = obs_a == a
-                if np.count_nonzero(obs_mask_a) >= 1:
-                    t0 = time.perf_counter()
-                    gamma_x_a = self._resolve_gamma_from_embeddings(
-                        X_obs_emb[obs_mask_a], self.gamma_x
-                    )
-                    if profile:
-                        self._profile_add(timings, "kernel_bandwidth", t0)
-                else:
-                    gamma_x_a = gamma_x_global
-                t0 = time.perf_counter()
-                Kx_obs_cand_local = rbf_kernel(
-                    X_obs_emb, X_cand_emb, gamma=gamma_x_a
-                )
-                if profile:
-                    self._profile_add(timings, "sample_kernel", t0)
-            else:
-                Kx_obs_cand_local = Kx_obs_cand_local_global
-
-            Kx_obs_cand = self._mix_with_global_sample_kernel(
-                Kx_obs_cand_local,
-                lam=self.annotator_lambda,
-            )
-
             if use_annotator_kernel:
                 t0 = time.perf_counter()
                 Ka_obs = rbf_kernel(
@@ -994,9 +1009,57 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 if profile:
                     self._profile_add(timings, "annotator_kernel", t0)
             else:
-                Ka_obs = (obs_a == a).astype(float)
+                Ka_obs = None
 
-            K_obs_cand = Kx_obs_cand * Ka_obs[:, None]
+            if response_fast_path:
+                if use_annotator_kernel:
+                    K_obs_cand = Ka_obs[:, None]
+                    m_response = m_obs
+                    Y_response = y_obs_oh
+                    responsibility_response = responsibility_obs
+                else:
+                    obs_idx_a = obs_indices_by_annotator[a]
+                    K_obs_cand = np.ones((obs_idx_a.size, 1), dtype=float)
+                    m_response = m_obs[obs_idx_a]
+                    Y_response = y_obs_oh[obs_idx_a]
+                    responsibility_response = responsibility_obs[obs_idx_a]
+                K_pair_for_gain = np.broadcast_to(
+                    K_obs_cand,
+                    (K_obs_cand.shape[0], n_candidates),
+                ).copy()
+            else:
+                if self.gamma_x_scope == "per_annotator":
+                    obs_mask_a = obs_a == a
+                    if np.count_nonzero(obs_mask_a) >= 1:
+                        t0 = time.perf_counter()
+                        gamma_x_a = self._resolve_gamma_from_embeddings(
+                            X_obs_emb[obs_mask_a], self.gamma_x
+                        )
+                        if profile:
+                            self._profile_add(timings, "kernel_bandwidth", t0)
+                    else:
+                        gamma_x_a = gamma_x_global
+                    t0 = time.perf_counter()
+                    Kx_obs_cand_local = rbf_kernel(
+                        X_obs_emb, X_cand_emb, gamma=gamma_x_a
+                    )
+                    if profile:
+                        self._profile_add(timings, "sample_kernel", t0)
+                else:
+                    Kx_obs_cand_local = Kx_obs_cand_local_global
+
+                Kx_obs_cand = self._mix_with_global_sample_kernel(
+                    Kx_obs_cand_local,
+                    lam=self.annotator_lambda,
+                )
+                if not use_annotator_kernel:
+                    Ka_obs = (obs_a == a).astype(float)
+                K_obs_cand = Kx_obs_cand * Ka_obs[:, None]
+                K_pair_for_gain = K_obs_cand
+                m_response = m_obs
+                Y_response = y_obs_oh
+                responsibility_response = responsibility_obs
+
             uses_channel_prior = (
                 self.channel_variant == "full_confusion"
                 and self.full_confusion_prior_source == "channel"
@@ -1014,7 +1077,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             } or uses_channel_prior or uses_local_accuracy_prior:
                 alpha, beta, _ = self.parzen_beta_posterior(
                     K=K_obs_cand,
-                    p=m_obs,
+                    p=m_response,
                     alpha0=alpha0,
                     beta0=beta0,
                     use_ess=self.use_ess_beta,
@@ -1030,7 +1093,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             ):
                 gamma_cand, _ = self.parzen_dirichlet_posterior(
                     K=K_obs_cand,
-                    Y=y_obs_oh,
+                    Y=Y_response,
                     gamma0=gamma0,
                     use_ess=self.use_ess_label_dirichlet,
                     tau=self.tau_label_dirichlet,
@@ -1040,6 +1103,8 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 if (
                     self.channel_variant == "channel"
                     and self.n_mc_samples <= 0
+                    and self.gain_type != "expected_accuracy"
+                    and not response_fast_path
                     and (self.top_m is None or self.top_m >= K)
                 ):
                     U_col = self._ig_channel_full_batch(
@@ -1055,10 +1120,10 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                     continue
 
             if self.channel_variant == "diag_uniform_confusion":
-                alpha_diag = np.empty((len(sample_indices), K), dtype=float)
-                beta_diag = np.empty((len(sample_indices), K), dtype=float)
-                y_eq = y_obs_oh
-                row_responsibility_obs = responsibility_obs
+                alpha_diag = np.empty((K_obs_cand.shape[1], K), dtype=float)
+                beta_diag = np.empty((K_obs_cand.shape[1], K), dtype=float)
+                y_eq = Y_response
+                row_responsibility_obs = responsibility_response
                 for z in range(K):
                     K_row = K_obs_cand * row_responsibility_obs[:, [z]]
                     a_z, b_z, _ = self.parzen_beta_posterior(
@@ -1076,8 +1141,12 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
 
             if self.channel_variant == "full_confusion":
                 t0 = time.perf_counter()
-                row_responsibility_obs = responsibility_obs
-                if obs_indices_by_annotator is not None:
+                row_responsibility_obs = responsibility_response
+                if response_fast_path:
+                    K_full = K_obs_cand
+                    Y_full = Y_response
+                    responsibility_full = row_responsibility_obs
+                elif obs_indices_by_annotator is not None:
                     obs_idx_a = obs_indices_by_annotator[a]
                     K_full = Kx_obs_cand[obs_idx_a]
                     Y_full = y_obs_oh[obs_idx_a]
@@ -1121,18 +1190,50 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             else:
                 confusion_rows = None
 
+            if response_fast_path:
+                if alpha is not None:
+                    alpha = self._broadcast_candidate_axis(alpha, n_candidates)
+                    beta = self._broadcast_candidate_axis(beta, n_candidates)
+                if gamma_cand is not None:
+                    gamma_cand = self._broadcast_candidate_axis(
+                        gamma_cand,
+                        n_candidates,
+                    )
+                if alpha_diag is not None:
+                    alpha_diag = self._broadcast_candidate_axis(
+                        alpha_diag,
+                        n_candidates,
+                    )
+                    beta_diag = self._broadcast_candidate_axis(
+                        beta_diag,
+                        n_candidates,
+                    )
+                if confusion_rows is not None:
+                    confusion_rows = self._broadcast_candidate_axis(
+                        confusion_rows,
+                        n_candidates,
+                    )
+
             # Vectorized fast paths for full-K variants.
             if (
                 self.channel_variant == "channel"
                 and (self.top_m is None or self.top_m >= K)
             ):
-                U_col = self._ig_channel_full_batch(
-                    r=r_cand_prior,
-                    alpha=alpha,
-                    beta=beta,
-                    gamma=gamma_cand,
-                    rng=rng,
-                )
+                if self.gain_type == "expected_accuracy":
+                    U_col = self._expected_accuracy_channel_batch(
+                        r=r_cand_prior,
+                        alpha=alpha,
+                        beta=beta,
+                        rng=rng,
+                    )
+                else:
+                    U_col = self._ig_channel_full_batch(
+                        r=r_cand_prior,
+                        alpha=alpha,
+                        beta=beta,
+                        gamma=gamma_cand,
+                        rng=rng,
+                    )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
@@ -1157,38 +1258,64 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 continue
 
             if self.channel_variant == "pi_mixture_channel":
-                U_col = self._ig_pi_mixture_channel_batch(
-                    r=r_cand_prior,
-                    alpha=alpha,
-                    beta=beta,
-                    gamma=gamma_cand,
-                    K_pair=K_obs_cand,
-                    rng=rng,
-                )
+                if self.gain_type == "expected_accuracy":
+                    U_col = self._expected_accuracy_pi_mixture_channel_batch(
+                        r=r_cand_prior,
+                        alpha=alpha,
+                        beta=beta,
+                        gamma=gamma_cand,
+                        K_pair=K_pair_for_gain,
+                        rng=rng,
+                    )
+                else:
+                    U_col = self._ig_pi_mixture_channel_batch(
+                        r=r_cand_prior,
+                        alpha=alpha,
+                        beta=beta,
+                        gamma=gamma_cand,
+                        K_pair=K_pair_for_gain,
+                        rng=rng,
+                    )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
                 continue
 
             if self.channel_variant == "scalar_uniform_confusion":
-                U_col = self._ig_scalar_uniform_confusion_batch(
-                    r=r_cand_prior,
-                    alpha=alpha,
-                    beta=beta,
-                    rng=rng,
-                )
+                if self.gain_type == "expected_accuracy":
+                    U_col = self._expected_accuracy_channel_batch(
+                        r=r_cand_prior,
+                        alpha=alpha,
+                        beta=beta,
+                        rng=rng,
+                    )
+                else:
+                    U_col = self._ig_scalar_uniform_confusion_batch(
+                        r=r_cand_prior,
+                        alpha=alpha,
+                        beta=beta,
+                        rng=rng,
+                    )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
                 continue
 
             if self.channel_variant == "diag_uniform_confusion":
-                U_col = self._ig_diag_uniform_confusion_batch(
-                    r=r_cand_prior,
-                    alpha=alpha_diag,
-                    beta=beta_diag,
-                    rng=rng,
-                )
+                if self.gain_type == "expected_accuracy":
+                    U_col = self._expected_accuracy_diag_uniform_confusion_batch(
+                        r=r_cand_prior,
+                        alpha=alpha_diag,
+                        beta=beta_diag,
+                        rng=rng,
+                    )
+                else:
+                    U_col = self._ig_diag_uniform_confusion_batch(
+                        r=r_cand_prior,
+                        alpha=alpha_diag,
+                        beta=beta_diag,
+                        rng=rng,
+                    )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
@@ -1196,11 +1323,18 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
 
             if self.channel_variant == "full_confusion":
                 t0 = time.perf_counter()
-                U_col = self._ig_full_confusion_batch(
-                    r=r_cand_prior,
-                    delta=confusion_rows,
-                    rng=rng,
-                )
+                if self.gain_type == "expected_accuracy":
+                    U_col = self._expected_accuracy_full_confusion_batch(
+                        r=r_cand_prior,
+                        delta=confusion_rows,
+                        rng=rng,
+                    )
+                else:
+                    U_col = self._ig_full_confusion_batch(
+                        r=r_cand_prior,
+                        delta=confusion_rows,
+                        rng=rng,
+                    )
                 if profile:
                     self._profile_add(timings, "gain_computation", t0)
                 if available_mask is not None:
@@ -1240,6 +1374,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             )
 
         r_obs = np.asarray(obs_out[0], dtype=float)
+        r_obs = 1.0 * r_obs + 0.0 * np.full_like(r_obs, fill_value=1/r_obs.shape[1])
         r_obs = np.clip(r_obs, eps, 1.0)
         r_obs = r_obs / np.maximum(r_obs.sum(axis=1, keepdims=True), eps)
         X_obs_emb = _l2_normalize(np.asarray(obs_out[1], dtype=float))
@@ -1876,6 +2011,32 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         )
         return self._aggregate_gain_draws(ig_draws)
 
+    def _expected_accuracy_channel_batch(
+        self,
+        *,
+        r: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        alpha = np.asarray(alpha, dtype=float)
+        beta = np.asarray(beta, dtype=float)
+
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch channel."
+            )
+        T = r.shape[1]
+        thetas = self._sample_theta_batch(
+            alpha=alpha,
+            beta=beta,
+            rng=rng,
+            n_draws=T,
+        )
+        acc_draws = thetas * r.sum(axis=2)
+        return self._aggregate_gain_draws(acc_draws)
+
     def _ig_pi_mixture_channel_batch(
         self,
         *,
@@ -1978,6 +2139,102 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         )
         return self._aggregate_gain_draws(ig_draws)
 
+    def _expected_accuracy_pi_mixture_channel_batch(
+        self,
+        *,
+        r: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+        K_pair: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        alpha = np.asarray(alpha, dtype=float)
+        beta = np.asarray(beta, dtype=float)
+        gamma = np.asarray(gamma, dtype=float)
+        K_pair = np.asarray(K_pair, dtype=float)
+
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) "
+                "in pi_mixture_channel."
+            )
+        if K_pair.ndim != 2:
+            raise ValueError(
+                "K_pair must have shape (n_observations, n_samples) "
+                "in pi_mixture_channel."
+            )
+        if K_pair.shape[1] != r.shape[0]:
+            raise ValueError("K_pair must agree with r on n_samples.")
+
+        batch_size = self.gain_batch_size
+        if batch_size is not None and r.shape[0] > batch_size:
+            gains = np.empty(r.shape[0], dtype=float)
+            for start in range(0, r.shape[0], batch_size):
+                stop = min(start + batch_size, r.shape[0])
+                gains[start:stop] = (
+                    self._expected_accuracy_pi_mixture_channel_batch_inner(
+                        r=r[start:stop],
+                        alpha=alpha[start:stop],
+                        beta=beta[start:stop],
+                        gamma=gamma[start:stop],
+                        K_pair=K_pair[:, start:stop],
+                        rng=rng,
+                    )
+                )
+            return gains
+
+        return self._expected_accuracy_pi_mixture_channel_batch_inner(
+            r=r,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            K_pair=K_pair,
+            rng=rng,
+        )
+
+    def _expected_accuracy_pi_mixture_channel_batch_inner(
+        self,
+        *,
+        r: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+        K_pair: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        _, T, _ = r.shape
+        thetas = self._sample_theta_batch(
+            alpha=alpha,
+            beta=beta,
+            rng=rng,
+            n_draws=T,
+        )
+        g = self._sample_label_distribution_batch(
+            gamma=gamma,
+            rng=rng,
+            n_draws=T,
+        )
+        C_orig = _channel_confusion_from_theta_g_batch(
+            theta=thetas,
+            g=g,
+            normalize_g=True,
+            check_input=False,
+        )
+        pi = self._pi_mixture_weight(
+            g=g,
+            K_pair=K_pair,
+        )
+        Cs = self._pi_mixture_confusion(
+            C_orig=C_orig,
+            g=g,
+            pi=pi,
+        )
+        diag = np.diagonal(Cs, axis1=2, axis2=3)
+        acc_draws = np.einsum("stk,stk->st", r, diag, optimize=True)
+        return self._aggregate_gain_draws(acc_draws)
+
     def _ig_scalar_uniform_confusion_batch(
         self,
         *,
@@ -2056,6 +2313,38 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         )
         return self._aggregate_gain_draws(ig_draws)
 
+    def _expected_accuracy_diag_uniform_confusion_batch(
+        self,
+        *,
+        r: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        alpha = np.asarray(alpha, dtype=float)
+        beta = np.asarray(beta, dtype=float)
+
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch confusion."
+            )
+        S, T, K = r.shape
+        if self.n_mc_samples <= 0:
+            thetas = self._theta_point_estimate(
+                alpha=alpha,
+                beta=beta,
+            )[:, None, :]
+        else:
+            thetas = rng.beta(
+                alpha[:, None, :],
+                beta[:, None, :],
+                size=(S, T, K),
+            ).astype(float)
+
+        acc_draws = np.einsum("stk,stk->st", r, thetas, optimize=True)
+        return self._aggregate_gain_draws(acc_draws)
+
     def _ig_full_confusion_batch(
         self,
         *,
@@ -2093,6 +2382,72 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             delta=delta,
             rng=rng,
         )
+
+    def _expected_accuracy_full_confusion_batch(
+        self,
+        *,
+        r: np.ndarray,
+        delta: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        delta = np.asarray(delta, dtype=float)
+
+        if delta.ndim != 3 or delta.shape[1] != delta.shape[2]:
+            raise ValueError(
+                "delta must have shape (n_samples, K, K) in batch full_confusion."
+            )
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes) in batch confusion."
+            )
+        if r.shape[0] != delta.shape[0] or r.shape[2] != delta.shape[1]:
+            raise ValueError(
+                "r and delta must agree on n_samples and n_classes."
+            )
+
+        batch_size = self.gain_batch_size
+        if batch_size is not None and delta.shape[0] > batch_size:
+            gains = np.empty(delta.shape[0], dtype=float)
+            for start in range(0, delta.shape[0], batch_size):
+                stop = min(start + batch_size, delta.shape[0])
+                gains[start:stop] = (
+                    self._expected_accuracy_full_confusion_batch_inner(
+                        r=r[start:stop],
+                        delta=delta[start:stop],
+                        rng=rng,
+                    )
+                )
+            return gains
+
+        return self._expected_accuracy_full_confusion_batch_inner(
+            r=r,
+            delta=delta,
+            rng=rng,
+        )
+
+    def _expected_accuracy_full_confusion_batch_inner(
+        self,
+        *,
+        r: np.ndarray,
+        delta: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        T = r.shape[1]
+        if not self._use_mc_label_dirichlet():
+            C_mean = delta / np.maximum(delta.sum(axis=2, keepdims=True), 1e-12)
+            diag = np.diagonal(C_mean, axis1=1, axis2=2)
+            acc_draws = np.einsum("stk,sk->st", r, diag, optimize=True)
+        else:
+            alpha = np.clip(delta[:, None, :, :], 1e-12, None)
+            if T != 1:
+                alpha = np.repeat(alpha, T, axis=1)
+            X = rng.gamma(shape=alpha, scale=1.0)
+            C = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
+            diag = np.diagonal(C, axis1=2, axis2=3)
+            acc_draws = np.einsum("stk,stk->st", r, diag, optimize=True)
+
+        return self._aggregate_gain_draws(acc_draws)
 
     def _ig_full_confusion_batch_inner(
         self,
