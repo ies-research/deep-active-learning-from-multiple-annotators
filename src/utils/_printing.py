@@ -189,7 +189,9 @@ IMPORTANT_KEYS = [
     "label_labels_per_sample_mean_covered",
     "label_frac_covered_ge2",
     "acc_pair_micro",
+    "acc_pair_balanced",
     "acc_majority_vote",
+    "acc_majority_vote_balanced",
     "acc_majority_vote_tie_rate",
     "acc_disagreement_rate_multi",
     "alloc_entropy_norm",
@@ -225,7 +227,9 @@ def pretty_cycle_metrics(
 
     # Label quality / noise
     acc_pair = _maybe(m, "acc_pair_micro")
+    acc_pair_bal = _maybe(m, "acc_pair_balanced")
     acc_mv = _maybe(m, "acc_majority_vote")
+    acc_mv_bal = _maybe(m, "acc_majority_vote_balanced")
     tie = _maybe(m, "acc_majority_vote_tie_rate")
     disagree = _maybe(m, "acc_disagreement_rate_multi")
 
@@ -280,7 +284,9 @@ def pretty_cycle_metrics(
 
     print("\nLabel quality")
     print(f"  acc_pair_micro              : {_format_pct(acc_pair, 1)}")
+    print(f"  acc_pair_balanced           : {_format_pct(acc_pair_bal, 1)}")
     print(f"  acc_majority_vote           : {_format_pct(acc_mv, 1)}")
+    print(f"  acc_majority_vote_balanced  : {_format_pct(acc_mv_bal, 1)}")
     print(f"  majority_vote_tie_rate      : {_format_pct(tie, 1)}")
     print(f"  disagreement_rate_multi     : {_format_pct(disagree, 1)}")
     if np.isfinite(d_pairs_acc):
@@ -321,7 +327,9 @@ class MetricHistory:
             "label_total_pairs",
             "label_frac_covered",
             "acc_pair_micro",
+            "acc_pair_balanced",
             "acc_majority_vote",
+            "acc_majority_vote_balanced",
             "alloc_entropy_norm",
             "alloc_gini",
             "test_acc",
@@ -330,8 +338,9 @@ class MetricHistory:
         ]
 
         header = (
-            f"{'cy':>3}  {'pairs':>9}  {'cov':>7}  {'pair':>7}  {'mv':>7}  "
-            f"{'ent':>6}  {'gini':>6}  {'tacc':>7}  {'tbacc':>7}  {'ll':>8}"
+            f"{'cy':>3}  {'pairs':>9}  {'cov':>7}  {'pair':>7}  {'pbal':>7}  "
+            f"{'mv':>7}  {'mvbal':>7}  {'ent':>6}  {'gini':>6}  {'tacc':>7}  "
+            f"{'tbacc':>7}  {'ll':>8}"
         )
         print(header)
         print("-" * len(header))
@@ -341,7 +350,9 @@ class MetricHistory:
             pairs = _format_int(_maybe(r, "label_total_pairs"))
             cov = _format_pct(_maybe(r, "label_frac_covered"), 2)
             pair = _format_pct(_maybe(r, "acc_pair_micro"), 1)
+            pair_bal = _format_pct(_maybe(r, "acc_pair_balanced"), 1)
             mv = _format_pct(_maybe(r, "acc_majority_vote"), 1)
+            mv_bal = _format_pct(_maybe(r, "acc_majority_vote_balanced"), 1)
             ent = _format_float(_maybe(r, "alloc_entropy_norm"), 3)
             gini = _format_float(_maybe(r, "alloc_gini"), 3)
             tacc = _format_pct(_maybe(r, "test_acc"), 1)
@@ -349,8 +360,9 @@ class MetricHistory:
             ll = _format_float(_maybe(r, "test_log_loss"), 3)
 
             print(
-                f"{cy:>3}  {pairs:>9}  {cov:>7}  {pair:>7}  {mv:>7}  "
-                f"{ent:>6}  {gini:>6}  {tacc:>7}  {tbacc:>7}  {ll:>8}"
+                f"{cy:>3}  {pairs:>9}  {cov:>7}  {pair:>7}  {pair_bal:>7}  "
+                f"{mv:>7}  {mv_bal:>7}  {ent:>6}  {gini:>6}  {tacc:>7}  "
+                f"{tbacc:>7}  {ll:>8}"
             )
 
 

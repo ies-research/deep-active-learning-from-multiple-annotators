@@ -36,6 +36,15 @@ def _gini(x: np.ndarray) -> float:
     return float((n + 1 - 2.0 * (cumx / cumx[-1]).sum()) / n)
 
 
+def _balanced_accuracy_or_zero(
+    y_true: np.ndarray, y_pred: np.ndarray
+) -> float:
+    """Return balanced accuracy for nonempty inputs, else 0.0."""
+    if y_true.size == 0:
+        return 0.0
+    return float(balanced_accuracy_score(y_true, y_pred))
+
+
 def _multiclass_brier_ovr(
     y_true: np.ndarray, p: np.ndarray, classes: np.ndarray
 ) -> float:
@@ -120,8 +129,13 @@ def compute_cycle_metrics(
     if total_pairs > 0:
         correct_mask = (Y == y_true[:, None]) & present
         pair_acc = float(correct_mask.sum() / total_pairs)
+        pair_bal_acc = _balanced_accuracy_or_zero(
+            np.broadcast_to(y_true[:, None], Y.shape)[present],
+            Y[present],
+        )
     else:
         pair_acc = 0.0
+        pair_bal_acc = 0.0
 
     # Majority vote stats
     if classes is None:
@@ -150,8 +164,13 @@ def compute_cycle_metrics(
                 == y_true[mv_present].astype(int)
             )
         )
+        mv_bal_acc = _balanced_accuracy_or_zero(
+            y_true[mv_present].astype(int),
+            mv_pred[mv_present].astype(int),
+        )
     else:
         mv_acc = 0.0
+        mv_bal_acc = 0.0
 
     # Tie rate among covered samples: multiple maxima in vote counts
     if covered.any():
@@ -250,7 +269,9 @@ def compute_cycle_metrics(
         "label_frac_covered_ge3": frac_cov_ge3,
         # accuracy / agreement
         "acc_pair_micro": pair_acc,
+        "acc_pair_balanced": pair_bal_acc,
         "acc_majority_vote": mv_acc,
+        "acc_majority_vote_balanced": mv_bal_acc,
         "acc_majority_vote_tie_rate": mv_tie_rate,
         "acc_disagreement_rate_multi": disagreement_rate,
         # allocation concentration
