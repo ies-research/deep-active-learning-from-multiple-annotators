@@ -68,6 +68,12 @@ class GreedyPairAssigner(PairAssigner):
     temperature_T : int, default=100
         Number of `_assign` calls over which temperature goes from max -> min.
     temperature_schedule : {"constant","cosine"}, default="cosine"
+    tie_break : {"first","random"}, default="first"
+        How to break exact or near-exact utility ties in greedy exploitation
+        steps. ``"first"`` keeps NumPy argmax behavior. ``"random"`` samples
+        uniformly among maximizers within ``tie_tolerance`` of the best score.
+    tie_tolerance : float, default=1e-12
+        Absolute tolerance used only for ``tie_break="random"``.
     """
 
     def __init__(
@@ -88,15 +94,20 @@ class GreedyPairAssigner(PairAssigner):
         max_per_sample=None,
         max_per_annotator=None,
         explore_top_m=None,
+        tie_break="first",
+        tie_tolerance=1e-12,
         random_state=None,
     ):
         selection = str(selection)
         coverage = str(coverage)
+        tie_break = str(tie_break)
 
         if selection not in {"greedy", "epsilon_greedy", "softmax"}:
             raise ValueError(f"Invalid selection={selection!r}.")
         if coverage not in {"none", "hard", "soft"}:
             raise ValueError(f"Invalid coverage={coverage!r}.")
+        if tie_break not in {"first", "random"}:
+            raise ValueError(f"Invalid tie_break={tie_break!r}.")
 
         eps_max = float(epsilon_max)
         eps_min = eps_max if epsilon_min is None else float(epsilon_min)
@@ -117,6 +128,8 @@ class GreedyPairAssigner(PairAssigner):
             raise ValueError("max_per_annotator must be positive or None.")
         if explore_top_m is not None and int(explore_top_m) <= 0:
             raise ValueError("explore_top_m must be positive or None.")
+        if float(tie_tolerance) < 0.0:
+            raise ValueError("tie_tolerance must be >= 0.")
 
         self.selection = selection
         self.coverage = coverage
@@ -130,6 +143,8 @@ class GreedyPairAssigner(PairAssigner):
         self.explore_top_m = (
             None if explore_top_m is None else int(explore_top_m)
         )
+        self.tie_break = tie_break
+        self.tie_tolerance = float(tie_tolerance)
         self.random_state = check_random_state(random_state)
 
         # Call-based schedules (stateful)
@@ -226,11 +241,11 @@ class GreedyPairAssigner(PairAssigner):
                     row_ok = np.zeros(S, dtype=bool)
                     row_ok[rows] = True
                     feasible &= row_ok[:, None]
-                    score[~feasible] = -np.inf
+                score[~feasible] = -np.inf
 
                 if self.selection == "greedy":
-                    flat_idx = int(np.argmax(score))
-                    if not np.isfinite(score.ravel()[flat_idx]):
+                    flat_idx = self._argmax(score, rng)
+                    if flat_idx is None:
                         break
 
                 elif self.selection == "epsilon_greedy":
@@ -239,8 +254,8 @@ class GreedyPairAssigner(PairAssigner):
                             score, feasible, rng
                         )
                     else:
-                        flat_idx = int(np.argmax(score))
-                        if not np.isfinite(score.ravel()[flat_idx]):
+                        flat_idx = self._argmax(score, rng)
+                        if flat_idx is None:
                             break
 
                 else:  # softmax
@@ -289,6 +304,19 @@ class GreedyPairAssigner(PairAssigner):
             feas_idx = feas_idx[top]
 
         return int(feas_idx[rng.randint(feas_idx.size)])
+
+    def _argmax(self, score, rng):
+        flat = np.asarray(score, dtype=float).ravel()
+        best = float(np.max(flat))
+        if not np.isfinite(best):
+            return None
+        if self.tie_break == "first":
+            return int(np.argmax(flat))
+
+        tied = np.flatnonzero(flat >= best - self.tie_tolerance)
+        if tied.size == 0:
+            return int(np.argmax(flat))
+        return int(tied[rng.randint(tied.size)])
 
     def _sample_softmax(self, score, feasible, rng, temperature: float):
         feas_idx = np.flatnonzero(feasible.ravel())

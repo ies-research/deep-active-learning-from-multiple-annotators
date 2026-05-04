@@ -1,0 +1,4 @@
+defaults:
+  - ks_bag_full_confusion_channel_prior
+
+confusion_parameter_gain_weight: 100

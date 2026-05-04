@@ -1,0 +1,4 @@
+defaults:
+  - ks_bag_full_confusion_channel_prior
+
+full_confusion_reduce_top_m: 90

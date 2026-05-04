@@ -1,0 +1,6 @@
+_target_: src.assigner.IntervalQuotaPairAssigner
+coverage: "hard"
+require_intervals: false
+fallback: "quota"
+max_per_sample: null
+max_per_annotator: null

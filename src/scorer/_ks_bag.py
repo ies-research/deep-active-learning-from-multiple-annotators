@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 
+from scipy.special import digamma
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.utils import check_random_state
 
@@ -261,9 +262,29 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
     pi_mixture_max : float, default=1.0
         Maximum class-independent mixture probability for
         `channel_variant="pi_mixture_channel"`.
+    full_confusion_reduce_top_m : int or None, default=None
+        If not None, approximate full-confusion entropy gain in a reduced
+        label space consisting of the candidate-specific top-M latent classes
+        plus one aggregated "other" class. This preserves response mass for
+        low-probability labels in the "other" output column, which is important
+        for single-class spammer behavior. Supported only for
+        `channel_variant="full_confusion"` and `gain_type="entropy"`.
+    confusion_parameter_gain_weight : float, default=0.0
+        Additive exploration bonus for `channel_variant="full_confusion"`.
+        The bonus is the expected one-step information gain about the
+        annotator's row-wise Dirichlet confusion model, weighted by the
+        candidate class posterior. A value of ``0.0`` disables the bonus.
     gain_batch_size : int or None, default=None
         Optional candidate chunk size used while evaluating full-confusion
         gains. ``None`` keeps the fully vectorized behavior.
+    store_utility_intervals : bool, default=False
+        If True, store pair-level lower/upper utility bounds from raw
+        full-confusion Monte Carlo gain draws in ``last_utility_lcb_`` and
+        ``last_utility_ucb_``. Currently populated only for
+        ``channel_variant="full_confusion"`` with ``n_mc_samples > 0``.
+    utility_interval_lower, utility_interval_upper : float, default=(0.0, 1.0)
+        Quantiles used for stored utility bounds. The default stores min/max
+        over the available Monte Carlo draws.
     profile_timing : bool, default=False
         If True, print lightweight scorer timing information. The same
         profiling output can be enabled with ``KS_BAG_PROFILE=1``.
@@ -318,8 +339,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         pi_mixture_kappa: float = 5.0,
         pi_mixture_gamma: float = 2.0,
         pi_mixture_max: float = 1.0,
+        full_confusion_reduce_top_m: int | None = None,
+        confusion_parameter_gain_weight: float = 0.0,
         gain_batch_size: int | None = None,
-        profile_timing: bool = False,
+        store_utility_intervals: bool = False,
+        utility_interval_lower: float = 0.0,
+        utility_interval_upper: float = 1.0,
+        profile_timing: bool = True,
         channel_wrong_label_mode: str = "normalize",
         random_state=None,
     ):
@@ -379,12 +405,26 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         self.pi_mixture_kappa = float(pi_mixture_kappa)
         self.pi_mixture_gamma = float(pi_mixture_gamma)
         self.pi_mixture_max = float(pi_mixture_max)
+        self.full_confusion_reduce_top_m = (
+            None
+            if full_confusion_reduce_top_m is None
+            else int(full_confusion_reduce_top_m)
+        )
+        self.confusion_parameter_gain_weight = float(
+            confusion_parameter_gain_weight
+        )
         self.gain_batch_size = (
             None if gain_batch_size is None else int(gain_batch_size)
         )
+        self.store_utility_intervals = bool(store_utility_intervals)
+        self.utility_interval_lower = float(utility_interval_lower)
+        self.utility_interval_upper = float(utility_interval_upper)
         self.profile_timing = bool(profile_timing)
         self.channel_wrong_label_mode = str(channel_wrong_label_mode)
         self.random_state = check_random_state(random_state)
+        self.last_utility_mean_ = None
+        self.last_utility_lcb_ = None
+        self.last_utility_ucb_ = None
 
         if self._accuracy_mean_mode == "fixed":
             if not (0.0 < self.accuracy_mean < 1.0):
@@ -405,6 +445,16 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             raise ValueError("gain_ucb_quantile must be in (0, 1)")
         if self.gain_batch_size is not None and self.gain_batch_size <= 0:
             raise ValueError("gain_batch_size must be positive or None")
+        if not (
+            0.0
+            <= self.utility_interval_lower
+            <= self.utility_interval_upper
+            <= 1.0
+        ):
+            raise ValueError(
+                "Require 0 <= utility_interval_lower <= "
+                "utility_interval_upper <= 1."
+            )
         if self.channel_label_dirichlet_strength <= 0:
             raise ValueError("channel_label_dirichlet_strength must be > 0")
         if self.response_entropy_cap_lambda < 0:
@@ -415,6 +465,28 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             raise ValueError("pi_mixture_gamma must be > 0")
         if not (0.0 <= self.pi_mixture_max <= 1.0):
             raise ValueError("pi_mixture_max must be in [0, 1]")
+        if self.confusion_parameter_gain_weight < 0.0:
+            raise ValueError("confusion_parameter_gain_weight must be >= 0")
+        if (
+            self.confusion_parameter_gain_weight > 0.0
+            and self.channel_variant != "full_confusion"
+        ):
+            raise ValueError(
+                "confusion_parameter_gain_weight requires "
+                "channel_variant='full_confusion'"
+            )
+        if self.full_confusion_reduce_top_m is not None:
+            if self.full_confusion_reduce_top_m <= 0:
+                raise ValueError("full_confusion_reduce_top_m must be positive or None")
+            if self.channel_variant != "full_confusion":
+                raise ValueError(
+                    "full_confusion_reduce_top_m requires "
+                    "channel_variant='full_confusion'"
+                )
+            if self.gain_type != "entropy":
+                raise ValueError(
+                    "full_confusion_reduce_top_m requires gain_type='entropy'"
+                )
         if self.gamma_x_scope not in {"global", "per_annotator"}:
             raise ValueError(
                 "gamma_x_scope must be one of {'global', 'per_annotator'}"
@@ -675,6 +747,9 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             rng = np.random.default_rng(
                 self.random_state.randint(0, 2**32 - 1)
             )
+        self.last_utility_mean_ = None
+        self.last_utility_lcb_ = None
+        self.last_utility_ucb_ = None
         profile = self._profile_enabled()
         timings: dict[str, float] = {}
         t_total = time.perf_counter()
@@ -747,6 +822,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             )
             if available_mask is not None:
                 U = np.where(available_mask, U, np.nan)
+            self.last_utility_mean_ = U.copy()
             return U
 
         classes = np.asarray(clf.classes_)
@@ -834,6 +910,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             gamma_x=gamma_x_global,
             rng=rng,
         )
+        threshold = 0.95
+
+        cs = np.cumsum(-np.sort(-r_cand_prior.mean(axis=1), axis=1), axis=1)
+        reached = cs >= threshold
+
+        n_elements = np.where(
+            reached.any(axis=1),
+            reached.argmax(axis=1) + 1,
+            -1,  # threshold never reached
+        )
+        print(np.mean(n_elements))
         if profile:
             self._profile_add(timings, "class_prior", t0)
 
@@ -866,6 +953,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         U = np.empty(
             (len(sample_indices), len(annotator_indices)), dtype=float
         )
+        store_intervals = (
+            self.store_utility_intervals
+            and self.channel_variant == "full_confusion"
+            and self.n_mc_samples > 0
+        )
+        U_lcb = np.full_like(U, np.nan) if store_intervals else None
+        U_ucb = np.full_like(U, np.nan) if store_intervals else None
         obs_indices_by_annotator = None
         if self.channel_variant == "full_confusion" and not use_annotator_kernel:
             obs_indices_by_annotator = [
@@ -1120,16 +1214,51 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
 
             if self.channel_variant == "full_confusion":
                 t0 = time.perf_counter()
-                U_col = self._ig_full_confusion_batch(
-                    r=r_cand_prior,
-                    delta=confusion_rows,
-                    rng=rng,
-                )
+                if store_intervals:
+                    U_col, U_lcb_col, U_ucb_col = self._ig_full_confusion_batch(
+                        r=r_cand_prior,
+                        delta=confusion_rows,
+                        rng=rng,
+                        return_interval_bounds=True,
+                    )
+                else:
+                    U_col = self._ig_full_confusion_batch(
+                        r=r_cand_prior,
+                        delta=confusion_rows,
+                        rng=rng,
+                    )
+                    U_lcb_col = U_ucb_col = None
+                if self.confusion_parameter_gain_weight > 0.0:
+                    bonus = (
+                        self.confusion_parameter_gain_weight
+                        * self._full_confusion_parameter_gain_batch(
+                            r=r_cand_prior,
+                            delta=confusion_rows,
+                        )
+                    )
+                    U_col = U_col + bonus
+                    if U_lcb_col is not None:
+                        U_lcb_col = U_lcb_col + bonus
+                        U_ucb_col = U_ucb_col + bonus
                 if profile:
                     self._profile_add(timings, "gain_computation", t0)
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
+                    if U_lcb_col is not None:
+                        U_lcb_col = np.where(
+                            available_mask[:, j_a],
+                            U_lcb_col,
+                            np.nan,
+                        )
+                        U_ucb_col = np.where(
+                            available_mask[:, j_a],
+                            U_ucb_col,
+                            np.nan,
+                        )
                 U[:, j_a] = U_col
+                if U_lcb is not None:
+                    U_lcb[:, j_a] = U_lcb_col
+                    U_ucb[:, j_a] = U_ucb_col
                 continue
 
             raise RuntimeError(
@@ -1138,6 +1267,10 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
 
         if available_mask is not None:
             U = np.where(available_mask, U, np.nan)
+
+        self.last_utility_mean_ = U.copy()
+        self.last_utility_lcb_ = None if U_lcb is None else U_lcb.copy()
+        self.last_utility_ucb_ = None if U_ucb is None else U_ucb.copy()
 
         if profile:
             self._profile_add(timings, "total", t_total)
@@ -1986,6 +2119,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         r: np.ndarray,
         delta: np.ndarray,
         rng: np.random.Generator,
+        return_interval_bounds: bool = False,
     ) -> np.ndarray:
         r = np.asarray(r, dtype=float)
         delta = np.asarray(delta, dtype=float)
@@ -2003,19 +2137,37 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         batch_size = self.gain_batch_size
         if batch_size is not None and delta.shape[0] > batch_size:
             gains = np.empty(delta.shape[0], dtype=float)
+            lcbs = (
+                np.empty(delta.shape[0], dtype=float)
+                if return_interval_bounds
+                else None
+            )
+            ucbs = (
+                np.empty(delta.shape[0], dtype=float)
+                if return_interval_bounds
+                else None
+            )
             for start in range(0, delta.shape[0], batch_size):
                 stop = min(start + batch_size, delta.shape[0])
-                gains[start:stop] = self._ig_full_confusion_batch_inner(
+                out = self._ig_full_confusion_batch_inner(
                     r=r[start:stop],
                     delta=delta[start:stop],
                     rng=rng,
+                    return_interval_bounds=return_interval_bounds,
                 )
+                if return_interval_bounds:
+                    gains[start:stop], lcbs[start:stop], ucbs[start:stop] = out
+                else:
+                    gains[start:stop] = out
+            if return_interval_bounds:
+                return gains, lcbs, ucbs
             return gains
 
         return self._ig_full_confusion_batch_inner(
             r=r,
             delta=delta,
             rng=rng,
+            return_interval_bounds=return_interval_bounds,
         )
 
     def _ig_full_confusion_batch_inner(
@@ -2024,24 +2176,228 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         r: np.ndarray,
         delta: np.ndarray,
         rng: np.random.Generator,
+        return_interval_bounds: bool = False,
     ) -> np.ndarray:
+        top_m = self.full_confusion_reduce_top_m
+        if top_m is not None and top_m < r.shape[-1]:
+            r, delta = self._reduce_full_confusion_topm(
+                r=r,
+                delta=delta,
+                top_m=top_m,
+            )
+
         T = r.shape[1]
         if not self._use_mc_label_dirichlet():
-            C_mean = delta / np.maximum(delta.sum(axis=2, keepdims=True), 1e-12)
-            Cs = np.repeat(C_mean[:, None, :, :], T, axis=1)
+            if delta.ndim == 3:
+                C_mean = delta / np.maximum(
+                    delta.sum(axis=2, keepdims=True),
+                    1e-12,
+                )
+                Cs = np.repeat(C_mean[:, None, :, :], T, axis=1)
+            else:
+                Cs = delta / np.maximum(
+                    delta.sum(axis=3, keepdims=True),
+                    1e-12,
+                )
         else:
-            alpha = np.clip(delta[:, None, :, :], 1e-12, None)
-            if T != 1:
-                alpha = np.repeat(alpha, T, axis=1)
+            if delta.ndim == 3:
+                alpha = np.clip(delta[:, None, :, :], 1e-12, None)
+                if T != 1:
+                    alpha = np.repeat(alpha, T, axis=1)
+            else:
+                alpha = np.clip(delta, 1e-12, None)
             X = rng.gamma(shape=alpha, scale=1.0)
             Cs = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
 
-        ig_draws = self._pair_gain(
-            r,
-            C=Cs,
-            batch_size=self.gain_batch_size,
+        if self.gain_type == "entropy":
+            ig_draws = self._entropy_gain_from_confusion_batch(
+                r=r,
+                C=Cs,
+            )
+            if self.entropy_response_cap:
+                cap = self._entropy_gain_upper_bound(r, C=Cs)
+                ig_draws = np.minimum(np.maximum(ig_draws, 0.0), cap)
+        else:
+            ig_draws = self._pair_gain(
+                r,
+                C=Cs,
+                batch_size=self.gain_batch_size,
+            )
+        gain = self._aggregate_gain_draws(ig_draws)
+        if not return_interval_bounds:
+            return gain
+        lcb, ucb = self._gain_draw_interval_bounds(ig_draws)
+        return gain, lcb, ucb
+
+    def _gain_draw_interval_bounds(
+        self,
+        gain_draws: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        gain_draws = np.asarray(gain_draws, dtype=float)
+        if gain_draws.ndim != 2:
+            raise ValueError(
+                "gain_draws must have shape (n_samples, n_draws)."
+            )
+        q_low = self.utility_interval_lower
+        q_high = self.utility_interval_upper
+        if q_low <= 0.0:
+            lcb = np.min(gain_draws, axis=1)
+        else:
+            lcb = np.quantile(gain_draws, q_low, axis=1)
+        if q_high >= 1.0:
+            ucb = np.max(gain_draws, axis=1)
+        else:
+            ucb = np.quantile(gain_draws, q_high, axis=1)
+        return lcb, ucb
+
+    @staticmethod
+    def _reduce_full_confusion_topm(
+        *,
+        r: np.ndarray,
+        delta: np.ndarray,
+        top_m: int,
+        eps: float = 1e-12,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        r = np.asarray(r, dtype=float)
+        delta = np.asarray(delta, dtype=float)
+
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes)."
+            )
+        if delta.ndim != 3 or delta.shape[1] != delta.shape[2]:
+            raise ValueError(
+                "delta must have shape (n_samples, K, K) before reduction."
+            )
+        S, T, K = r.shape
+        if delta.shape[0] != S or delta.shape[1] != K:
+            raise ValueError("r and delta must agree on samples/classes.")
+        if top_m <= 0:
+            raise ValueError("top_m must be positive.")
+        if top_m >= K:
+            return r, delta
+
+        M = top_m + 1
+        r_red = np.empty((S, T, M), dtype=float)
+        delta_red = np.empty((S, T, M, M), dtype=float)
+
+        for i in range(S):
+            delta_i = delta[i]
+            for t in range(T):
+                r_it = np.asarray(r[i, t], dtype=float)
+                order = np.argsort(-r_it, kind="mergesort")
+                keep = order[:top_m]
+                other = order[top_m:]
+
+                other_mass = float(r_it[other].sum())
+                r_red[i, t, :top_m] = r_it[keep]
+                r_red[i, t, top_m] = other_mass
+                r_red[i, t] /= np.maximum(r_red[i, t].sum(), eps)
+
+                delta_red[i, t, :top_m, :top_m] = delta_i[np.ix_(keep, keep)]
+                delta_red[i, t, :top_m, top_m] = delta_i[
+                    np.ix_(keep, other)
+                ].sum(axis=1)
+
+                if other_mass > eps:
+                    weights = r_it[other] / other_mass
+                else:
+                    weights = np.full(other.size, 1.0 / other.size)
+                other_row = weights @ delta_i[other]
+                delta_red[i, t, top_m, :top_m] = other_row[keep]
+                delta_red[i, t, top_m, top_m] = other_row[other].sum()
+
+        return r_red, delta_red
+
+    @staticmethod
+    def _entropy_gain_from_confusion_batch(
+        *,
+        r: np.ndarray,
+        C: np.ndarray,
+        eps: float = 1e-12,
+    ) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        C = np.asarray(C, dtype=float)
+        r = np.clip(r, eps, 1.0)
+        C = np.clip(C, eps, 1.0)
+        r = r / np.maximum(r.sum(axis=-1, keepdims=True), eps)
+        C = C / np.maximum(C.sum(axis=-1, keepdims=True), eps)
+
+        q = np.einsum("...k,...ky->...y", r, C, optimize=True)
+        q = q / np.maximum(q.sum(axis=-1, keepdims=True), eps)
+        h_response = KernelSmoothedBayesianAnnotatorGain._entropy_bits(
+            q,
+            eps=eps,
         )
-        return self._aggregate_gain_draws(ig_draws)
+        h_channel_rows = KernelSmoothedBayesianAnnotatorGain._entropy_bits(
+            C,
+            eps=eps,
+        )
+        h_response_given_class = np.sum(r * h_channel_rows, axis=-1)
+        return np.maximum(h_response - h_response_given_class, 0.0)
+
+    def _full_confusion_parameter_gain_batch(
+        self,
+        *,
+        r: np.ndarray,
+        delta: np.ndarray,
+    ) -> np.ndarray:
+        r = np.asarray(r, dtype=float)
+        delta = np.asarray(delta, dtype=float)
+        if r.ndim != 3:
+            raise ValueError(
+                "r must have shape (n_samples, n_draws, n_classes)."
+            )
+        if delta.ndim != 3 or delta.shape[1] != delta.shape[2]:
+            raise ValueError(
+                "delta must have shape (n_samples, K, K) for parameter gain."
+            )
+        if r.shape[0] != delta.shape[0] or r.shape[2] != delta.shape[1]:
+            raise ValueError("r and delta must agree on samples/classes.")
+
+        r = np.clip(r, 1e-12, 1.0)
+        r = r / np.maximum(r.sum(axis=2, keepdims=True), 1e-12)
+        row_gain = self._dirichlet_one_step_information_gain(delta)
+        gain_draws = np.einsum("stk,sk->st", r, row_gain, optimize=True)
+        return self._aggregate_gain_draws(np.maximum(gain_draws, 0.0))
+
+    @staticmethod
+    def _dirichlet_one_step_information_gain(
+        alpha: np.ndarray,
+        *,
+        eps: float = 1e-12,
+    ) -> np.ndarray:
+        """Expected entropy reduction of a Dirichlet after one categorical draw.
+
+        The result uses bits, matching the entropy gain used for predictive IG.
+        For each row ``alpha`` it computes
+
+            H[Dir(alpha)] - E_{y ~ alpha / alpha0} H[Dir(alpha + e_y)]
+
+        without materializing all ``K`` possible posterior Dirichlets.
+        """
+        alpha = np.clip(np.asarray(alpha, dtype=float), eps, None)
+        alpha0 = alpha.sum(axis=-1)
+        K = alpha.shape[-1]
+        pred = alpha / np.maximum(alpha0[..., None], eps)
+
+        weighted_log_alpha = np.sum(pred * np.log(alpha), axis=-1)
+        delta_sum = np.sum(
+            pred
+            * (
+                alpha * digamma(alpha + 1.0)
+                - (alpha - 1.0) * digamma(alpha)
+            ),
+            axis=-1,
+        )
+        gain_nats = (
+            (alpha0 - K) * digamma(alpha0)
+            - weighted_log_alpha
+            + np.log(alpha0)
+            - (alpha0 + 1.0 - K) * digamma(alpha0 + 1.0)
+            + delta_sum
+        )
+        return np.maximum(gain_nats / np.log(2.0), 0.0)
 
     def _pair_gain(
         self,

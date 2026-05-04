@@ -1,6 +1,7 @@
 import numpy as np
 
 from abc import ABC, abstractmethod
+from inspect import Parameter, signature
 
 
 class PairAssigner(ABC):
@@ -28,6 +29,11 @@ class PairAssigner(ABC):
         sample_indices=None,
         annotator_indices=None,
         budget=1,
+        annotator_label_counts=None,
+        annotator_remaining_counts=None,
+        utility_lcb=None,
+        utility_ucb=None,
+        remaining_budget=None,
         **kwargs,
     ):
         """
@@ -44,6 +50,13 @@ class PairAssigner(ABC):
             pairs.
         budget : int, default=1
             Maximum number of (sample, annotator) pairs to return.
+        annotator_label_counts, annotator_remaining_counts : array-like, optional
+            Optional annotator count metadata consumed by quota-style assigners.
+        utility_lcb, utility_ucb : array-like, optional
+            Optional pair-level utility interval metadata consumed by
+            interval-aware assigners.
+        remaining_budget : int, optional
+            Optional global budget metadata for assigners that use it.
         **kwargs : dict
             Additional keyword arguments for concrete assigners (e.g., rng).
 
@@ -78,12 +91,53 @@ class PairAssigner(ABC):
         if budget < 0:
             raise ValueError(f"`budget` must be >= 0, got {budget}.")
 
+        optional_kwargs = dict(kwargs)
+        for name, value in {
+            "annotator_label_counts": annotator_label_counts,
+            "annotator_remaining_counts": annotator_remaining_counts,
+            "utility_lcb": utility_lcb,
+            "utility_ucb": utility_ucb,
+            "remaining_budget": remaining_budget,
+        }.items():
+            if value is not None:
+                optional_kwargs[name] = value
+
+        return self._call_assign(
+            utilities=utilities,
+            sample_indices=sample_indices,
+            annotator_indices=annotator_indices,
+            budget=budget,
+            optional_kwargs=optional_kwargs,
+        )
+
+    def _call_assign(
+        self,
+        *,
+        utilities,
+        sample_indices,
+        annotator_indices,
+        budget,
+        optional_kwargs,
+    ):
+        params = signature(self._assign).parameters
+        has_var_keyword = any(
+            p.kind == Parameter.VAR_KEYWORD for p in params.values()
+        )
+        if has_var_keyword:
+            assign_kwargs = optional_kwargs
+        else:
+            assign_kwargs = {
+                key: value
+                for key, value in optional_kwargs.items()
+                if key in params
+            }
+
         return self._assign(
             utilities=utilities,
             sample_indices=sample_indices,
             annotator_indices=annotator_indices,
             budget=budget,
-            **kwargs,
+            **assign_kwargs,
         )
 
     @abstractmethod

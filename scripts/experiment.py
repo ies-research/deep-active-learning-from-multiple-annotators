@@ -146,6 +146,7 @@ def experiment(cfg):
                 cfg=sim_cfg,
                 embedder_fingerprint=sim_embedder_fingerprint,
             )
+        #z_train = np.column_stack([y_train] * z_train.shape[1])
         np_arrays["z_train"] = z_train
 
     # Print dataset summary. --------------------------------------------------
@@ -311,6 +312,8 @@ def experiment(cfg):
         )
 
         # Compute utilities for selected samples. -----------------------------
+        utility_lcb = None
+        utility_ucb = None
         if len(sample_indices) == 0 or len(annotator_indices) == 0:
             utilities = np.empty(
                 (len(sample_indices), len(annotator_indices)), dtype=float
@@ -325,6 +328,9 @@ def experiment(cfg):
                 clf=clf,
                 available_mask=available_mask[np.ix_(sample_indices, annotator_indices)],
             )
+            print(np.nanmean(utilities, axis=0).min(), np.nanmean(utilities, axis=0).max())
+            utility_lcb = getattr(current_scorer, "last_utility_lcb_", None)
+            utility_ucb = getattr(current_scorer, "last_utility_ucb_", None)
 
         # Assign annotators to samples given utilities. -----------------------
         remaining_budget = cfg.al.n_cycles * cfg.al.actual_pair_budget - cycle_idx * cfg.al.actual_pair_budget
@@ -336,9 +342,12 @@ def experiment(cfg):
             budget=current_pair_budget,
             annotator_label_counts=annotator_label_counts,
             annotator_remaining_counts=annotator_remaining_counts,
+            utility_lcb=utility_lcb,
+            utility_ucb=utility_ucb,
             remaining_budget=remaining_budget,
             ignore_var_keyword=True,
         )
+        print(np.unique(pair_indices[:, 1]))
 
         # Query labels according to assignment. -------------------------------
         y_pool[(pair_indices[:, 0], pair_indices[:, 1])] = z_train[

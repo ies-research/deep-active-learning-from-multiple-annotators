@@ -10,9 +10,9 @@ observed_class_prior: "classifier" # classifier or kernel
 observed_class_prior_leave_one_out: false
 
 # Sample / annotator kernels
-gamma_x: "median" # to be investigated
+gamma_x: "minimum" # to be investigated
 gamma_x_scope: "global" # to be investigated
-gamma_a: "median"
+gamma_a: "minimum"
 use_annotator_embeddings: false
 annotator_lambda: 0.0 # 0=local only, 1=global only
 
@@ -39,5 +39,7 @@ gain_batch_size: 128
 
 # Approximation / utility
 top_m: null
+full_confusion_reduce_top_m: null
+confusion_parameter_gain_weight: 0.0
 gain_type: entropy # to be investigated
 random_state: ${seed}
