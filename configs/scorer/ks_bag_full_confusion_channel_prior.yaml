@@ -1,7 +1,7 @@
 _target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
 
 # Accuracy prior
-accuracy_mean: 0.99 # to be investigated
+accuracy_mean: global_observed # to be investigated
 accuracy_strength: 1.0 # to be investigated
 
 # Correctness mode
@@ -14,12 +14,13 @@ gamma_x: "median" # to be investigated
 gamma_x_scope: "global" # to be investigated
 gamma_a: "median"
 use_annotator_embeddings: false
-annotator_lambda: 0.0 # 0=local only, 1=global only
+annotator_lambda: 1.0 # 0=local only, 1=global only
 
 # Channel model
 channel_variant: "full_confusion"
 full_confusion_prior_source: "channel"
-full_confusion_channel_prior_strength: 3.0 # to be investigated
+full_confusion_prior_strength: 3.0 # to be investigated
+full_confusion_channel_prior_strength: 1.0 # deprecated alias
 channel_label_dirichlet_strength: 1.0 # to be investigated
 channel_wrong_label_mode: "normalize" # to be investigated
 

@@ -17,9 +17,9 @@ use_annotator_embeddings: false
 annotator_lambda: 0.0 # 0=local only, 1=global only
 
 # Channel model
-channel_variant: "full_confusion" 
-full_confusion_prior_source: "accuracy"
-full_confusion_prior_strength: null
+channel_variant: "full_confusion"
+full_confusion_prior_source: "local_accuracy"
+full_confusion_prior_strength: 3.0 # to be investigated
 
 # Latent class prior
 class_prior: "kernel" # to be investigated
@@ -30,7 +30,7 @@ tau_class_prior: 1.0
 sample_class_prior: true # to be investigated
 
 # Posterior concentration / sampling
-use_ess_beta: false
+use_ess_beta: true
 tau_beta: 1.0
 use_ess_label_dirichlet: true
 tau_label_dirichlet: 1.0 # to be investigated

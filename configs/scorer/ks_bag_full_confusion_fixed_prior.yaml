@@ -19,6 +19,7 @@ annotator_lambda: 0.0 # 0=local only, 1=global only
 # Channel model
 channel_variant: "full_confusion"
 full_confusion_prior_source: "accuracy"
+full_confusion_prior_strength: null
 
 # Latent class prior
 class_prior: "kernel" # to be investigated

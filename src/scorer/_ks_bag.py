@@ -153,17 +153,22 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             "scalar_uniform_confusion", "diag_uniform_confusion", /
             "full_confusion"}, default="channel"
         Annotator noise parameterization used for gain computation.
-    full_confusion_prior_source : {"accuracy", "channel"}, default="accuracy"
+    full_confusion_prior_source : {"accuracy", "local_accuracy", "channel"}, default="accuracy"
         Prior used for `channel_variant="full_confusion"`:
         - "accuracy": use the existing accuracy-prior mean with uniform
           off-diagonal mass.
+        - "local_accuracy": use the local scalar accuracy posterior mean with
+          uniform off-diagonal mass.
         - "channel": use the local channel posterior mean as a
           candidate-specific full-confusion Dirichlet prior mean.
+    full_confusion_prior_strength : float or None, default=None
+        Dirichlet row concentration for full-confusion priors. If None,
+        `accuracy` and `local_accuracy` fall back to `accuracy_strength`, while
+        `channel` falls back to `full_confusion_channel_prior_strength`.
     full_confusion_channel_prior_strength : float, default=1.0
-        Dirichlet row concentration used after converting the local channel
-        posterior mean into a full-confusion prior. Used only when
-        `channel_variant="full_confusion"` and
-        `full_confusion_prior_source="channel"`.
+        Deprecated alias for the channel full-confusion prior row
+        concentration. Used only when `full_confusion_prior_source="channel"`
+        and `full_confusion_prior_strength` is None.
     correctness_mode : {"classifier", "annotator_perf", /
             "annotator_perf_posterior", "confusion_posterior", "auto"}, \
             default="classifier"
@@ -296,6 +301,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         response_entropy_cap_lambda: float = 1.0,
         channel_variant: str = "channel",
         full_confusion_prior_source: str = "accuracy",
+        full_confusion_prior_strength: float | None = None,
         full_confusion_channel_prior_strength: float = 1.0,
         correctness_mode: str = "classifier",
         observed_class_prior: str = "classifier",
@@ -344,6 +350,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         self.response_entropy_cap_lambda = float(response_entropy_cap_lambda)
         self.channel_variant = str(channel_variant)
         self.full_confusion_prior_source = str(full_confusion_prior_source)
+        self.full_confusion_prior_strength = (
+            None
+            if full_confusion_prior_strength is None
+            else float(full_confusion_prior_strength)
+        )
         self.full_confusion_channel_prior_strength = float(
             full_confusion_channel_prior_strength
         )
@@ -443,19 +454,36 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 "{'channel', 'pi_mixture_channel', 'scalar_uniform_confusion', "
                 "'diag_uniform_confusion', 'full_confusion'}"
             )
-        if self.full_confusion_prior_source not in {"accuracy", "channel"}:
+        if self.full_confusion_prior_source not in {
+            "accuracy",
+            "local_accuracy",
+            "channel",
+        }:
             raise ValueError(
                 "full_confusion_prior_source must be one of "
-                "{'accuracy', 'channel'}"
+                "{'accuracy', 'local_accuracy', 'channel'}"
             )
         if (
-            self.full_confusion_prior_source == "channel"
+            self.full_confusion_prior_source in {"local_accuracy", "channel"}
             and self.channel_variant != "full_confusion"
         ):
             raise ValueError(
-                "full_confusion_prior_source='channel' requires "
+                f"full_confusion_prior_source={self.full_confusion_prior_source!r} requires "
                 "channel_variant='full_confusion'"
             )
+        if (
+            self.full_confusion_prior_strength is not None
+            and self.channel_variant != "full_confusion"
+        ):
+            raise ValueError(
+                "full_confusion_prior_strength is only used when "
+                "channel_variant='full_confusion'"
+            )
+        if (
+            self.full_confusion_prior_strength is not None
+            and self.full_confusion_prior_strength <= 0
+        ):
+            raise ValueError("full_confusion_prior_strength must be > 0")
         if self.full_confusion_channel_prior_strength <= 0:
             raise ValueError("full_confusion_channel_prior_strength must be > 0")
         if (
@@ -465,6 +493,37 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             raise ValueError(
                 "full_confusion_channel_prior_strength is only used when "
                 "full_confusion_prior_source='channel'"
+            )
+        if (
+            self.full_confusion_prior_source == "channel"
+            and self.full_confusion_prior_strength is not None
+            and self.full_confusion_channel_prior_strength != 1.0
+            and not np.isclose(
+                self.full_confusion_prior_strength,
+                self.full_confusion_channel_prior_strength,
+            )
+        ):
+            raise ValueError(
+                "full_confusion_prior_strength and "
+                "full_confusion_channel_prior_strength disagree"
+            )
+        if self.full_confusion_prior_strength is None:
+            if self.full_confusion_prior_source == "channel":
+                resolved_full_confusion_prior_strength = (
+                    self.full_confusion_channel_prior_strength
+                )
+            else:
+                resolved_full_confusion_prior_strength = self.accuracy_strength
+        else:
+            resolved_full_confusion_prior_strength = (
+                self.full_confusion_prior_strength
+            )
+        self._full_confusion_prior_row_strength = float(
+            resolved_full_confusion_prior_strength
+        )
+        if self.full_confusion_prior_source == "channel":
+            self.full_confusion_channel_prior_strength = (
+                self._full_confusion_prior_row_strength
             )
         if self.correctness_mode not in {
             "classifier",
@@ -533,12 +592,16 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             self.channel_variant == "full_confusion"
             and self.full_confusion_prior_source == "channel"
         )
+        uses_local_accuracy_prior = (
+            self.channel_variant == "full_confusion"
+            and self.full_confusion_prior_source == "local_accuracy"
+        )
         uses_beta = self.channel_variant in {
             "channel",
             "pi_mixture_channel",
             "scalar_uniform_confusion",
             "diag_uniform_confusion",
-        } or uses_channel_prior
+        } or uses_channel_prior or uses_local_accuracy_prior
         if not uses_beta:
             if self.use_ess_beta:
                 raise ValueError(
@@ -860,7 +923,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         delta0_full_global = self._full_confusion_dirichlet_prior(
             K=K,
             accuracy_mean=prior_acc_global,
-            row_strength=self.accuracy_strength,
+            row_strength=self._full_confusion_prior_row_strength,
         )
 
         U = np.empty(
@@ -891,7 +954,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 delta0_full = self._full_confusion_dirichlet_prior(
                     K=K,
                     accuracy_mean=prior_acc,
-                    row_strength=self.accuracy_strength,
+                    row_strength=self._full_confusion_prior_row_strength,
                 )
             else:
                 alpha0 = alpha0_global
@@ -938,13 +1001,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 self.channel_variant == "full_confusion"
                 and self.full_confusion_prior_source == "channel"
             )
+            uses_local_accuracy_prior = (
+                self.channel_variant == "full_confusion"
+                and self.full_confusion_prior_source == "local_accuracy"
+            )
 
             if self.channel_variant in {
                 "channel",
                 "pi_mixture_channel",
                 "scalar_uniform_confusion",
                 "diag_uniform_confusion",
-            } or uses_channel_prior:
+            } or uses_channel_prior or uses_local_accuracy_prior:
                 alpha, beta, _ = self.parzen_beta_posterior(
                     K=K_obs_cand,
                     p=m_obs,
@@ -1026,8 +1093,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                             beta=beta,
                             gamma=gamma_cand,
                             row_strength=(
-                                self.full_confusion_channel_prior_strength
+                                self._full_confusion_prior_row_strength
                             ),
+                        )
+                    )
+                elif uses_local_accuracy_prior:
+                    delta0_full_for_candidates = (
+                        self._local_accuracy_prior_full_confusion_dirichlet_prior(
+                            alpha=alpha,
+                            beta=beta,
+                            K=K,
+                            row_strength=self._full_confusion_prior_row_strength,
                         )
                     )
                 else:
@@ -2481,6 +2557,39 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         off = (1.0 - accuracy_mean) / (K - 1)
         prior_mean = np.full((K, K), off, dtype=float)
         np.fill_diagonal(prior_mean, accuracy_mean)
+        return row_strength * prior_mean
+
+    @classmethod
+    def _local_accuracy_prior_full_confusion_dirichlet_prior(
+        cls,
+        *,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        K: int,
+        row_strength: float,
+        eps: float = 1e-12,
+    ) -> np.ndarray:
+        alpha = np.asarray(alpha, dtype=float)
+        beta = np.asarray(beta, dtype=float)
+
+        if alpha.ndim != 1 or beta.ndim != 1:
+            raise ValueError("alpha and beta must have shape (n_candidates,).")
+        if alpha.shape != beta.shape:
+            raise ValueError("alpha and beta must agree on candidates.")
+        if K < 2:
+            raise ValueError("K must be >= 2")
+        if row_strength <= 0:
+            raise ValueError("row_strength must be > 0")
+
+        theta = alpha / np.maximum(alpha + beta, eps)
+        theta = np.clip(theta, eps, 1.0 - eps)
+        off = ((1.0 - theta) / (K - 1))[:, None, None]
+        prior_mean = np.broadcast_to(
+            off,
+            (alpha.shape[0], K, K),
+        ).copy()
+        idx = np.arange(K)
+        prior_mean[:, idx, idx] = theta[:, None]
         return row_strength * prior_mean
 
     @classmethod
