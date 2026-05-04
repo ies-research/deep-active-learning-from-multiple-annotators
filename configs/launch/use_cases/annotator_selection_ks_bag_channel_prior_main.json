@@ -110,15 +110,6 @@
       "name": "classifier",
       "type": "choices",
       "values": {
-        "majority_voting": {
-          "overrides": [
-            "classifier=majority_voting",
-            "training=default"
-          ],
-          "tags": {
-            "classifier_noise_model": "none"
-          }
-        },
         "geo_reg_f": {
           "overrides": [
             "classifier=geo_reg_f",
@@ -148,7 +139,7 @@
             "scorer@scorer.actual=ks_bag_full_confusion_channel_prior",
             "scorer.actual.correctness_mode=classifier",
             "scorer.actual.full_confusion_prior_source=channel",
-            "scorer.actual.full_confusion_channel_prior_strength=3.0",
+            "scorer.actual.full_confusion_prior_strength=3.0",
             "scorer.actual.accuracy_mean=global_observed",
             "scorer.actual.accuracy_strength=1.0",
             "scorer.actual.gamma_x=median",
@@ -181,6 +172,12 @@
         },
         "performance": {
           "overrides": ["scorer@scorer.actual=performance"],
+          "tags": {
+            "method_family": "reliability"
+          }
+        },
+        "beta": {
+          "overrides": ["scorer@scorer.actual=beta"],
           "tags": {
             "method_family": "reliability"
           }

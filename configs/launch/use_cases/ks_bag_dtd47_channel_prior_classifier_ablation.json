@@ -131,11 +131,22 @@
             "scorer.actual.use_ess_label_dirichlet=true"
           ]
         },
+        "full_confusion_local_accuracy_prior_s3": {
+          "overrides": [
+            "scorer.actual.channel_variant=full_confusion",
+            "scorer.actual.full_confusion_prior_source=local_accuracy",
+            "scorer.actual.full_confusion_prior_strength=3.0",
+            "scorer.actual.accuracy_mean=global_observed",
+            "scorer.actual.accuracy_strength=1.0",
+            "scorer.actual.use_ess_beta=true",
+            "scorer.actual.use_ess_label_dirichlet=true"
+          ]
+        },
         "full_confusion_channel_prior_s1": {
           "overrides": [
             "scorer.actual.channel_variant=full_confusion",
             "scorer.actual.full_confusion_prior_source=channel",
-            "scorer.actual.full_confusion_channel_prior_strength=1.0",
+            "scorer.actual.full_confusion_prior_strength=1.0",
             "scorer.actual.accuracy_mean=global_observed",
             "scorer.actual.accuracy_strength=1.0",
             "scorer.actual.channel_label_dirichlet_strength=1.0",
@@ -148,7 +159,7 @@
           "overrides": [
             "scorer.actual.channel_variant=full_confusion",
             "scorer.actual.full_confusion_prior_source=channel",
-            "scorer.actual.full_confusion_channel_prior_strength=3.0",
+            "scorer.actual.full_confusion_prior_strength=3.0",
             "scorer.actual.accuracy_mean=global_observed",
             "scorer.actual.accuracy_strength=1.0",
             "scorer.actual.channel_label_dirichlet_strength=1.0",
@@ -161,7 +172,7 @@
           "overrides": [
             "scorer.actual.channel_variant=full_confusion",
             "scorer.actual.full_confusion_prior_source=channel",
-            "scorer.actual.full_confusion_channel_prior_strength=10.0",
+            "scorer.actual.full_confusion_prior_strength=10.0",
             "scorer.actual.accuracy_mean=global_observed",
             "scorer.actual.accuracy_strength=1.0",
             "scorer.actual.channel_label_dirichlet_strength=1.0",
