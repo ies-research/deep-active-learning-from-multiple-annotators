@@ -14,6 +14,13 @@ from hydra.utils import instantiate, get_class, to_absolute_path
 from skactiveml.utils import majority_vote, is_labeled, call_func, is_unlabeled
 from skactiveml.pool import SubSamplingWrapper
 
+from src.calibration import (
+    build_soft_vote_targets,
+    select_calibration_indices,
+    set_classifier_temperature,
+    tune_temperature_from_logits,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -146,6 +153,7 @@ def experiment(cfg):
                 cfg=sim_cfg,
                 embedder_fingerprint=sim_embedder_fingerprint,
             )
+        #z_train = np.column_stack([y_train] * z_train.shape[1])
         np_arrays["z_train"] = z_train
 
     # Print dataset summary. --------------------------------------------------
@@ -169,44 +177,45 @@ def experiment(cfg):
     module_dict[f"module__in_features"] = n_features
     module_dict[f"module__out_features"] = len(classes)
 
-    # Build learning rate scheduler. ------------------------------------------
-    cosine_scheduler = LRScheduler(
-        policy=CosineAnnealingLR,
-        step_every="epoch",
-        T_max=cfg.training.max_epochs,
-    )
+    def _build_classifier():
+        cosine_scheduler = LRScheduler(
+            policy=CosineAnnealingLR,
+            step_every="epoch",
+            T_max=cfg.training.max_epochs,
+        )
+        neural_net_param_dict = {
+            # Module-related parameters.
+            **module_dict,
+            # Optimizer-related parameters.
+            "max_epochs": cfg.training.max_epochs,
+            "optimizer": RAdam,
+            "optimizer__weight_decay": cfg.training.weight_decay,
+            "optimizer__lr": cfg.training.learning_rate,
+            "optimizer__decoupled_weight_decay": True,
+            "callbacks": [("lr_scheduler", cosine_scheduler)],
+            # Data loading parameters.
+            "iterator_train__shuffle": True,
+            "iterator_train__num_workers": cfg.training.num_workers,
+            "iterator_train__batch_size": cfg.training.train_batch_size,
+            "iterator_valid__batch_size": cfg.training.eval_batch_size,
+            "iterator_train__drop_last": True,
+            "train_split": None,
+            # Misc.
+            "verbose": 0,
+            "device": cfg.device,
+        }
+        clf = instantiate(
+            cfg.classifier,
+            clf_module=clf_module,
+            neural_net_param_dict=neural_net_param_dict,
+            classes=classes,
+            missing_label=cfg.missing_label,
+        )
+        return set_classifier_temperature(clf, 1.0)
 
-    # Build dictionary for neural network. ------------------------------------
-    neural_net_param_dict = {
-        # Module-related parameters.
-        **module_dict,
-        # Optimizer-related parameters.
-        "max_epochs": cfg.training.max_epochs,
-        "optimizer": RAdam,
-        "optimizer__weight_decay": cfg.training.weight_decay,
-        "optimizer__lr": cfg.training.learning_rate,
-        "optimizer__decoupled_weight_decay": True,
-        "callbacks": [("lr_scheduler", cosine_scheduler)],
-        # Data loading parameters.
-        "iterator_train__shuffle": True,
-        "iterator_train__num_workers": cfg.training.num_workers,
-        "iterator_train__batch_size": cfg.training.train_batch_size,
-        "iterator_valid__batch_size": cfg.training.eval_batch_size,
-        "iterator_train__drop_last": True,
-        "train_split": None,
-        # Misc.
-        "verbose": 0,
-        "device": cfg.device,
-    }
-
-    # Build classifier. -------------------------------------------------------
-    clf = instantiate(
-        cfg.classifier,
-        clf_module=clf_module,
-        neural_net_param_dict=neural_net_param_dict,
-        classes=classes,
-        missing_label=cfg.missing_label,
-    )
+    # The split classifier tunes T. The full classifier owns standard AL metrics.
+    split_clf = _build_classifier()
+    full_clf = _build_classifier()
 
     # Build sample query strategies. ------------------------------------------
     init_qs = instantiate(cfg.sample.init, missing_label=cfg.missing_label)
@@ -249,9 +258,23 @@ def experiment(cfg):
     steps = []
     cycle_log = []
     prev_present = None
+    calib_cfg = getattr(cfg, "calibration", None)
+    calibration_enabled = bool(
+        getattr(calib_cfg, "enabled", False)
+    ) if calib_cfg is not None else False
+    policy_classifier = str(
+        getattr(calib_cfg, "policy_classifier", "split")
+    ).lower() if calib_cfg is not None else "full"
+    if policy_classifier not in {"split", "full"}:
+        raise ValueError("calibration.policy_classifier must be 'split' or 'full'.")
 
     # Perform active learning cycle. ------------------------------------------
     for cycle_idx in range(cfg.al.n_cycles):
+        policy_clf = (
+            split_clf
+            if calibration_enabled and policy_classifier == "split"
+            else full_clf
+        )
 
         # Set sampler, scorer, and assigner. ----------------------------------
         current_qs = init_qs if cycle_idx == 0 else actual_qs
@@ -306,7 +329,7 @@ def experiment(cfg):
             y=y_agg,
             candidates=candidates,
             batch_size=current_sample_budget,
-            clf=clf,
+            clf=policy_clf,
             fit_clf=False,
         )
 
@@ -322,33 +345,123 @@ def experiment(cfg):
                 y=y_pool,
                 sample_indices=sample_indices,
                 annotator_indices=annotator_indices,
-                clf=clf,
+                clf=policy_clf,
                 available_mask=available_mask[np.ix_(sample_indices, annotator_indices)],
             )
+            print(np.nanmean(utilities, axis=0))
 
         # Assign annotators to samples given utilities. -----------------------
         remaining_budget = cfg.al.n_cycles * cfg.al.actual_pair_budget - cycle_idx * cfg.al.actual_pair_budget
         pair_indices = call_func(
             f_callable=current_assigner,
             utilities=utilities,
+            utility_draws=getattr(current_scorer, "last_utility_draws_", None),
             sample_indices=sample_indices,
             annotator_indices=annotator_indices,
             budget=current_pair_budget,
+            X=X_pool,
+            clf=policy_clf,
+            y=y_pool,
+            missing_label=cfg.missing_label,
             annotator_label_counts=annotator_label_counts,
             annotator_remaining_counts=annotator_remaining_counts,
             remaining_budget=remaining_budget,
-            ignore_var_keyword=True,
         )
 
         # Query labels according to assignment. -------------------------------
         y_pool[(pair_indices[:, 0], pair_indices[:, 1])] = z_train[
             (pair_indices[:, 0], pair_indices[:, 1])
         ]
+        print(np.unique(pair_indices[:, 1], return_counts=True))
         # y_pool[sample_indices, 0] = y_train[sample_indices]
 
-        # Retrain classifier and infer predictions for test samples. ----------
-        clf.fit(X_pool, y_pool)
-        p_pred_test = clf.predict_proba(X_test)
+        # Retrain classifiers and infer predictions for test samples. ---------
+        calibration_metrics = {}
+        if calibration_enabled:
+            calib_indices, split_stats = select_calibration_indices(
+                y_pool,
+                missing_label=cfg.missing_label,
+                validation_fraction=float(calib_cfg.validation_fraction),
+                min_labeled_samples=int(calib_cfg.min_labeled_samples),
+                min_validation_samples=int(calib_cfg.min_validation_samples),
+                min_votes_per_sample=int(calib_cfg.min_votes_per_sample),
+                random_state=int(cfg.seed) + int(cycle_idx),
+            )
+            y_split = y_pool.copy()
+            if calib_indices.size > 0:
+                y_split[calib_indices] = cfg.missing_label
+
+            set_classifier_temperature(split_clf, 1.0)
+            split_clf.fit(X_pool, y_split)
+
+            if calib_indices.size > 0:
+                _, calib_logits = split_clf.predict_proba(
+                    X_pool[calib_indices],
+                    extra_outputs=["logits"],
+                )
+                calib_targets, calib_votes, calib_n_votes = (
+                    build_soft_vote_targets(
+                        y_pool[calib_indices],
+                        classes=classes,
+                        missing_label=cfg.missing_label,
+                        smoothing_total=float(calib_cfg.soft_vote_smoothing_total),
+                    )
+                )
+                calib_result = tune_temperature_from_logits(
+                    calib_logits,
+                    calib_targets,
+                    vote_counts=calib_votes,
+                    objective=str(calib_cfg.objective),
+                    bounds=(
+                        float(calib_cfg.temperature_min),
+                        float(calib_cfg.temperature_max),
+                    ),
+                    ece_n_bins=int(getattr(calib_cfg, "ece_n_bins", 15)),
+                )
+                temperature = calib_result.temperature
+                calibration_metrics.update(calib_result.metrics)
+                calibration_metrics["calib_votes_mean"] = float(
+                    np.mean(calib_n_votes)
+                )
+            else:
+                temperature = 1.0
+                calibration_metrics.update(
+                    {
+                        "calib_temperature": 1.0,
+                        "calib_nll_before": np.nan,
+                        "calib_nll_after": np.nan,
+                        "calib_brier_before": np.nan,
+                        "calib_brier_after": np.nan,
+                        "calib_ece_before": np.nan,
+                        "calib_ece_after": np.nan,
+                        "calib_confidence_before": np.nan,
+                        "calib_confidence_after": np.nan,
+                        "calib_majority_acc_before": np.nan,
+                        "calib_majority_acc_after": np.nan,
+                        "calib_majority_balanced_acc_before": np.nan,
+                        "calib_majority_balanced_acc_after": np.nan,
+                        "calib_votes_mean": np.nan,
+                    }
+                )
+            calibration_metrics.update(split_stats)
+            set_classifier_temperature(split_clf, temperature)
+
+            set_classifier_temperature(full_clf, 1.0)
+            full_clf.fit(X_pool, y_pool)
+            set_classifier_temperature(full_clf, temperature)
+        else:
+            set_classifier_temperature(full_clf, 1.0)
+            full_clf.fit(X_pool, y_pool)
+            set_classifier_temperature(full_clf, 1.0)
+            calibration_metrics.update(
+                {
+                    "calib_enabled": 0.0,
+                    "calib_temperature": 1.0,
+                    "calib_selected_samples": 0.0,
+                }
+            )
+
+        p_pred_test = full_clf.predict_proba(X_test)
 
         # Log results of current cycle.
         steps.append(
@@ -362,6 +475,50 @@ def experiment(cfg):
             classes=classes,
             p_pred_test=p_pred_test,
             y_test=y_test,
+        )
+        active_policy_clf = (
+            split_clf
+            if calibration_enabled and policy_classifier == "split"
+            else full_clf
+        )
+        policy_p_pred_test = active_policy_clf.predict_proba(X_test)
+        policy_entry = compute_cycle_metrics(
+            y_acquired=y_pool,
+            y_true=y_train,
+            missing_label=cfg.missing_label,
+            prev_present=prev_present,
+            classes=classes,
+            p_pred_test=policy_p_pred_test,
+            y_test=y_test,
+        )
+        entry.update(
+            {
+                f"policy_{k}": v
+                for k, v in policy_entry.items()
+                if k.startswith("test_")
+            }
+        )
+        if calibration_enabled and policy_classifier == "full":
+            split_p_pred_test = split_clf.predict_proba(X_test)
+            split_entry = compute_cycle_metrics(
+                y_acquired=y_pool,
+                y_true=y_train,
+                missing_label=cfg.missing_label,
+                prev_present=prev_present,
+                classes=classes,
+                p_pred_test=split_p_pred_test,
+                y_test=y_test,
+            )
+            entry.update(
+                {
+                    f"split_{k}": v
+                    for k, v in split_entry.items()
+                    if k.startswith("test_")
+                }
+            )
+        entry.update(calibration_metrics)
+        entry["calib_policy_classifier_split"] = float(
+            calibration_enabled and policy_classifier == "split"
         )
         prev_present = is_labeled(y_pool, missing_label=cfg.missing_label)
         cycle_log.append(entry)

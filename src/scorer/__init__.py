@@ -1,6 +1,7 @@
 from ._performance import PerformancePairScorer
 from ._label_minority import LabelMinorityPairScorer
 from ._ig import InformationGainPairScorer
+from ._posthoc_confusion_ig import PostHocConfusionInformationGain
 from ._keig import KernelEvidenceInformationGain
 from ._diversity import (
     SemanticDiversityPairScorer,
@@ -19,6 +20,7 @@ __all__ = [
     "PerformancePairScorer",
     "LabelMinorityPairScorer",
     "InformationGainPairScorer",
+    "PostHocConfusionInformationGain",
     "KernelEvidenceInformationGain",
     "SemanticDiversityPairScorer",
     "RepresentationDiversityPairScorer",

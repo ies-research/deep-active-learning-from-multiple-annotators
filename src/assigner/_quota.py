@@ -41,6 +41,7 @@ class QuotaPairAssigner(PairAssigner):
         budget,
         annotator_label_counts=None,
         annotator_remaining_counts=None,
+        **kwargs,
     ):
         sample_indices = np.asarray(sample_indices, dtype=int)
         annotator_indices = np.asarray(annotator_indices, dtype=int)

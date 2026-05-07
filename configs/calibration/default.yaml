@@ -1,0 +1,11 @@
+enabled: true
+policy_classifier: full # split or full
+validation_fraction: 0.2
+min_labeled_samples: 50
+min_validation_samples: 10
+min_votes_per_sample: 2
+soft_vote_smoothing_total: 0.0
+objective: ece
+ece_n_bins: 15
+temperature_min: 0.25
+temperature_max: 2.0

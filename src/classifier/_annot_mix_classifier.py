@@ -335,7 +335,11 @@ try:
             # by the input parameters.
             net = self.neural_net_.module_
             old_forward_return = net.forward_return
-            forward_outputs = {"probas": (0, nn.Softmax(dim=-1))}
+            def _temperature_softmax(logits):
+                temperature = float(getattr(self, "temperature_", 1.0))
+                return F.softmax(logits / max(temperature, 1e-12), dim=-1)
+
+            forward_outputs = {"probas": (0, _temperature_softmax)}
             forward_returns = ["logits_class"]
             out_idx = 1
 

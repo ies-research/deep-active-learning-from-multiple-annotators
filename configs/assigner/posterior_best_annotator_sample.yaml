@@ -1,0 +1,5 @@
+_target_: src.assigner.GreedyPairAssigner
+selection: "posterior_best_annotator"
+coverage: "hard"
+posterior_best_temperature: 1.0
+posterior_best_floor: 0.0

@@ -3,6 +3,7 @@ try:
 
     from sklearn.utils.validation import check_array
     from torch import nn
+    from torch.nn import functional as F
 
     from skactiveml.classifier.multiannotator._utils import (
         _MultiAnnotatorClassificationModule,
@@ -87,6 +88,7 @@ try:
             "embeddings",
             "annotator_perf",
             "annotator_class",
+            "annotator_confusion_matrices",
         }
 
         def __init__(
@@ -172,6 +174,9 @@ try:
 
             if X_train is None or y_train is None:
                 self.Alpha_ = default_alpha
+                self.annotator_confusion_matrices_ = self.Alpha_.astype(
+                    np.float32, copy=False
+                )
                 self.Mu_ = np.empty((0, n_classes), dtype=np.float32)
                 self.objective_history_ = np.asarray([], dtype=np.float64)
                 return self
@@ -209,6 +214,9 @@ try:
                 current_objective = objective
 
             self.Mu_ = mu.astype(np.float32, copy=False)
+            self.annotator_confusion_matrices_ = self.Alpha_.astype(
+                np.float32, copy=False
+            )
             self.objective_history_ = np.asarray(
                 self.objective_history_, dtype=np.float64
             )
@@ -240,6 +248,9 @@ try:
                 - "annotator_class" : Additionally return the annotator-class
                   probability estimates `P_annot` for each sample, annotator,
                   and class.
+                - "annotator_confusion_matrices" : Additionally return the
+                  fitted annotator confusion matrices `C` of shape
+                  `(n_annotators, n_classes, n_classes)`.
 
             Returns
             -------
@@ -265,6 +276,10 @@ try:
                   `(n_samples, n_annotators, n_classes)`, where
                   `P_annot[n, m, c]` is the probability that annotator `m`
                   outputs class `classes_[c]` for sample `X[n]`.
+                - `C` : `np.ndarray` of shape
+                  `(n_annotators, n_classes, n_classes)`, where
+                  `C[m, i, j]` is the probability that annotator `m` outputs
+                  class `classes_[j]` if the true class is `classes_[i]`.
             """
             self._validate_data_kwargs()
             X = check_array(X, **self.check_X_dict_)
@@ -281,7 +296,11 @@ try:
 
             net = self.neural_net_.module_
             old_forward_return = net.forward_return
-            forward_outputs = {"proba": (0, nn.Softmax(dim=-1))}
+            def _temperature_softmax(logits):
+                temperature = float(getattr(self, "temperature_", 1.0))
+                return F.softmax(logits / max(temperature, 1e-12), dim=-1)
+
+            forward_outputs = {"proba": (0, _temperature_softmax)}
             forward_returns = ["logits_class"]
             model_extra_outputs = []
             out_idx = 1
@@ -318,7 +337,11 @@ try:
 
             if any(
                 name in extra_outputs
-                for name in ("annotator_perf", "annotator_class")
+                for name in (
+                    "annotator_perf",
+                    "annotator_class",
+                    "annotator_confusion_matrices",
+                )
             ):
                 if not hasattr(self, "Alpha_"):
                     raise RuntimeError(
@@ -326,8 +349,9 @@ try:
                         "no fitted annotator confusion matrices."
                     )
                 p_class_float = np.asarray(p_class, dtype=float)
+                confusions = np.asarray(self.Alpha_, dtype=float)
                 if "annotator_perf" in extra_outputs:
-                    conf_diag = np.diagonal(self.Alpha_, axis1=1, axis2=2)
+                    conf_diag = np.diagonal(confusions, axis1=1, axis2=2)
                     named_outputs["annotator_perf"] = np.einsum(
                         "nk,mk->nm", p_class_float, conf_diag, optimize=True
                     ).astype(np.float32, copy=False)
@@ -335,9 +359,13 @@ try:
                     named_outputs["annotator_class"] = np.einsum(
                         "nk,mkl->nml",
                         p_class_float,
-                        self.Alpha_,
+                        confusions,
                         optimize=True,
                     ).astype(np.float32, copy=False)
+                if "annotator_confusion_matrices" in extra_outputs:
+                    named_outputs["annotator_confusion_matrices"] = (
+                        confusions.astype(np.float32, copy=False)
+                    )
 
             self._initialize_fallbacks(p_class)
             if not extra_outputs:

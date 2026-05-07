@@ -1,0 +1,14 @@
+_target_: src.assigner.KernelHerdingPairAssigner
+instance_kernel: rbf
+annotator_kernel: dirac
+rbf_gamma: median
+rbf_gamma_scope: current_and_labeled
+gamma_max_samples: 4096
+instance_weight: 1.0
+objective: gain_coverage
+history_coverage: samples
+history_chunk_size: 4096
+history_max_samples: null
+max_pair_uherding_pairs: 20000
+normalize_embeddings: true
+random_state: ${seed}

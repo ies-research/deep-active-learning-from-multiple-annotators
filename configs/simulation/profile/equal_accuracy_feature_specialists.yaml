@@ -1,0 +1,15 @@
+types:
+  # All annotators share the same expected global accuracy. Their differences
+  # come from low-concentration cluster-conditioned confusion rows, so each
+  # annotator is good in different feature-space regions.
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: equal_accuracy_feature_specialist
+    proportion: 1.0
+    q_mean: 0.65
+    q_std: 0.0
+    s_mean: 10000
+    s_std: 0.0
+    kappa_mean: 8
+    kappa_std: 0.15
+    difficulty_beta_mean: 0.001
+    difficulty_beta_std: 0.0

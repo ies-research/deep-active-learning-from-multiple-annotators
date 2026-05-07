@@ -1,0 +1,11 @@
+enabled: false
+policy_classifier: full # ignored when disabled
+validation_fraction: 0.2
+min_labeled_samples: 50
+min_validation_samples: 10
+min_votes_per_sample: 2
+soft_vote_smoothing_total: 1.0
+objective: nll
+ece_n_bins: 15
+temperature_min: 0.25
+temperature_max: 8.0

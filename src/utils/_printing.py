@@ -203,6 +203,13 @@ IMPORTANT_KEYS = [
     "test_balanced_acc",
     "test_log_loss",
     "test_brier_ovr",
+    "calib_enabled",
+    "calib_temperature",
+    "calib_selected_samples",
+    "calib_nll_before",
+    "calib_nll_after",
+    "calib_ece_before",
+    "calib_ece_after",
 ]
 
 
@@ -246,6 +253,26 @@ def pretty_cycle_metrics(
     test_bal = _maybe(m, "test_balanced_acc")
     test_ll = _maybe(m, "test_log_loss")
     test_brier = _maybe(m, "test_brier_ovr")
+
+    # Calibration
+    calib_enabled = _maybe(m, "calib_enabled")
+    calib_temp = _maybe(m, "calib_temperature")
+    calib_candidates = _maybe(m, "calib_candidate_samples")
+    calib_selected = _maybe(m, "calib_selected_samples")
+    calib_min_votes = _maybe(m, "calib_min_votes_used")
+    calib_nll_before = _maybe(m, "calib_nll_before")
+    calib_nll_after = _maybe(m, "calib_nll_after")
+    calib_brier_before = _maybe(m, "calib_brier_before")
+    calib_brier_after = _maybe(m, "calib_brier_after")
+    calib_ece_before = _maybe(m, "calib_ece_before")
+    calib_ece_after = _maybe(m, "calib_ece_after")
+    calib_conf_before = _maybe(m, "calib_confidence_before")
+    calib_conf_after = _maybe(m, "calib_confidence_after")
+    calib_mv_before = _maybe(m, "calib_majority_acc_before")
+    calib_mv_after = _maybe(m, "calib_majority_acc_after")
+    calib_mv_bal_before = _maybe(m, "calib_majority_balanced_acc_before")
+    calib_mv_bal_after = _maybe(m, "calib_majority_balanced_acc_after")
+    calib_policy_split = _maybe(m, "calib_policy_classifier_split")
 
     tag = (
         f"Active Learning Metrics | Cycle {cycle}"
@@ -301,6 +328,37 @@ def pretty_cycle_metrics(
     print(f"  test_balanced_acc           : {_format_pct(test_bal, 2)}")
     print(f"  test_log_loss               : {_format_float(test_ll, 4)}")
     print(f"  test_brier_ovr              : {_format_float(test_brier, 6)}")
+
+    if np.isfinite(calib_enabled):
+        enabled_txt = "yes" if calib_enabled >= 0.5 else "no"
+        policy_txt = "split" if calib_policy_split >= 0.5 else "full"
+        print("\nCalibration")
+        print(f"  enabled                     : {enabled_txt}")
+        print(f"  policy_classifier           : {policy_txt}")
+        print(f"  temperature                 : {_format_float(calib_temp, 4)}")
+        if calib_enabled >= 0.5:
+            print(
+                f"  validation_samples          : {_format_int(calib_selected)} / {_format_int(calib_candidates)}"
+            )
+            print(f"  min_votes_used              : {_format_int(calib_min_votes)}")
+            print(
+                f"  soft_vote_nll               : {_format_float(calib_nll_before, 4)} -> {_format_float(calib_nll_after, 4)}"
+            )
+            print(
+                f"  soft_vote_brier             : {_format_float(calib_brier_before, 6)} -> {_format_float(calib_brier_after, 6)}"
+            )
+            print(
+                f"  soft_vote_ece               : {_format_float(calib_ece_before, 6)} -> {_format_float(calib_ece_after, 6)}"
+            )
+            print(
+                f"  mean_confidence             : {_format_pct(calib_conf_before, 1)} -> {_format_pct(calib_conf_after, 1)}"
+            )
+            print(
+                f"  majority_acc_diagnostic     : {_format_pct(calib_mv_before, 1)} -> {_format_pct(calib_mv_after, 1)}"
+            )
+            print(
+                f"  majority_bal_acc_diagnostic : {_format_pct(calib_mv_bal_before, 1)} -> {_format_pct(calib_mv_bal_after, 1)}"
+            )
     print()
 
 

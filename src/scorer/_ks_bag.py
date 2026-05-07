@@ -272,6 +272,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
     gain_batch_size : int or None, default=None
         Optional candidate chunk size used while evaluating full-confusion
         gains. ``None`` keeps the fully vectorized behavior.
+    store_utility_draws : bool, default=False
+        If True, store the final per-pair Monte Carlo utility draws from the
+        latest call in ``last_utility_draws_`` with shape
+        ``(n_samples, n_annotators, n_draws)``. The returned utility matrix is
+        still the configured aggregate over draws.
     profile_timing : bool, default=False
         If True, print lightweight scorer timing information. The same
         profiling output can be enabled with ``KS_BAG_PROFILE=1``.
@@ -283,6 +288,14 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         - "sample_dirichlet_wrong": for each assumed true class z, draw
           (or use mean of) a Dirichlet over wrong labels only,
           `Dir(gamma_{-z})`.
+    observed_evidence_weighting : {"none", "certainty"}, default="none"
+        Optional weighting of observed annotation evidence before estimating
+        annotator response/confusion posteriors. "certainty" discounts
+        evidence from high-entropy classifier posteriors via
+        ``(K * sum_z p_z^2 - 1) / (K - 1)``.
+    observed_evidence_weight_floor : float, default=0.0
+        Floor mixed into certainty weights. A floor of 0.05 maps zero-certainty
+        observations to weight 0.05 and one-hot observations to weight 1.0.
     random_state : None or int, default=None
         Seed for reproducibility.
     """
@@ -329,7 +342,10 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         pi_mixture_max: float = 1.0,
         gain_batch_size: int | None = None,
         profile_timing: bool = True,
+        store_utility_draws: bool = False,
         channel_wrong_label_mode: str = "normalize",
+        observed_evidence_weighting: str = "none",
+        observed_evidence_weight_floor: float = 0.0,
         random_state=None,
     ):
         if isinstance(accuracy_mean, str):
@@ -397,7 +413,19 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             None if gain_batch_size is None else int(gain_batch_size)
         )
         self.profile_timing = bool(profile_timing)
+        self.store_utility_draws = bool(store_utility_draws)
+        self.last_utility_draws_ = None
+        self._utility_draw_capture_parts = None
+        self._share_response_draws_for_current_call = False
         self.channel_wrong_label_mode = str(channel_wrong_label_mode)
+        self.observed_evidence_weighting = str(observed_evidence_weighting)
+        self.observed_evidence_weight_floor = float(
+            observed_evidence_weight_floor
+        )
+        self.last_observed_evidence_weight_ = None
+        self.last_observed_entropy_ = None
+        self._resolved_observed_evidence_weight = None
+        self._resolved_observed_entropy = None
         self.random_state = check_random_state(random_state)
 
         if self._accuracy_mean_mode == "fixed":
@@ -445,6 +473,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 "channel_wrong_label_mode must be one of "
                 "{'normalize', 'sample_dirichlet_wrong'}"
             )
+        if self.observed_evidence_weighting not in {"none", "certainty"}:
+            raise ValueError(
+                "observed_evidence_weighting must be one of "
+                "{'none', 'certainty'}"
+            )
+        if not (0.0 <= self.observed_evidence_weight_floor <= 1.0):
+            raise ValueError("observed_evidence_weight_floor must be in [0, 1]")
         if self.channel_variant not in {
             "channel",
             "pi_mixture_channel",
@@ -632,6 +667,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 "gain_ucb_quantile requires n_mc_samples > 0"
             )
 
+        if self.observed_evidence_weighting != "none" and (
+            self.use_ess_beta
+            or self.use_ess_label_dirichlet
+            or self.use_ess_class_prior
+        ):
+            raise ValueError(
+                "observed_evidence_weighting requires all ESS options to be "
+                "disabled: use_ess_beta=False, "
+                "use_ess_label_dirichlet=False, and use_ess_class_prior=False"
+            )
+
         uses_label_dirichlet = self.channel_variant in {
             "channel",
             "pi_mixture_channel",
@@ -774,6 +820,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         t_total = time.perf_counter()
         n_candidates = len(sample_indices)
         response_fast_path = self._uses_instance_independent_response_fast_path()
+        self.last_utility_draws_ = None
+        self.last_observed_evidence_weight_ = None
+        self.last_observed_entropy_ = None
+        self._resolved_observed_evidence_weight = None
+        self._resolved_observed_entropy = None
 
         classes = clf.classes_
         K = len(classes)
@@ -843,6 +894,12 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             )
             if available_mask is not None:
                 U = np.where(available_mask, U, np.nan)
+            if self.store_utility_draws:
+                self.last_utility_draws_ = np.full(
+                    (len(sample_indices), len(annotator_indices), self._mc_draw_count()),
+                    np.nan,
+                    dtype=float,
+                )
             return U
 
         classes = np.asarray(clf.classes_)
@@ -875,6 +932,17 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         )
         if profile:
             self._profile_add(timings, "observed_evidence", t0)
+        if self._resolved_observed_evidence_weight is None:
+            evidence_weight_obs = np.ones(obs_s.shape[0], dtype=float)
+        else:
+            evidence_weight_obs = self._resolved_observed_evidence_weight
+        self.last_observed_evidence_weight_ = evidence_weight_obs.copy()
+        if self._resolved_observed_entropy is None:
+            self.last_observed_entropy_ = self._normalized_entropy(
+                responsibility_obs,
+            )
+        else:
+            self.last_observed_entropy_ = self._resolved_observed_entropy.copy()
         _, obs_first_idx = np.unique(obs_s, return_index=True)
         X_obs_cls_emb = X_obs_emb[obs_first_idx]
         r_obs_cls = r_obs[obs_first_idx]
@@ -966,6 +1034,15 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         U = np.empty(
             (n_candidates, len(annotator_indices)), dtype=float
         )
+        utility_draws = (
+            np.full(
+                (n_candidates, len(annotator_indices), self._mc_draw_count()),
+                np.nan,
+                dtype=float,
+            )
+            if self.store_utility_draws
+            else None
+        )
         obs_indices_by_annotator = None
         if (
             (response_fast_path or self.channel_variant == "full_confusion")
@@ -1017,12 +1094,14 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                     m_response = m_obs
                     Y_response = y_obs_oh
                     responsibility_response = responsibility_obs
+                    evidence_weight_response = evidence_weight_obs
                 else:
                     obs_idx_a = obs_indices_by_annotator[a]
                     K_obs_cand = np.ones((obs_idx_a.size, 1), dtype=float)
                     m_response = m_obs[obs_idx_a]
                     Y_response = y_obs_oh[obs_idx_a]
                     responsibility_response = responsibility_obs[obs_idx_a]
+                    evidence_weight_response = evidence_weight_obs[obs_idx_a]
                 K_pair_for_gain = np.broadcast_to(
                     K_obs_cand,
                     (K_obs_cand.shape[0], n_candidates),
@@ -1059,6 +1138,9 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 m_response = m_obs
                 Y_response = y_obs_oh
                 responsibility_response = responsibility_obs
+                evidence_weight_response = evidence_weight_obs
+
+            K_evidence_cand = K_obs_cand * evidence_weight_response[:, None]
 
             uses_channel_prior = (
                 self.channel_variant == "full_confusion"
@@ -1076,7 +1158,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 "diag_uniform_confusion",
             } or uses_channel_prior or uses_local_accuracy_prior:
                 alpha, beta, _ = self.parzen_beta_posterior(
-                    K=K_obs_cand,
+                    K=K_evidence_cand,
                     p=m_response,
                     alpha0=alpha0,
                     beta0=beta0,
@@ -1092,7 +1174,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 or uses_channel_prior
             ):
                 gamma_cand, _ = self.parzen_dirichlet_posterior(
-                    K=K_obs_cand,
+                    K=K_evidence_cand,
                     Y=Y_response,
                     gamma0=gamma0,
                     use_ess=self.use_ess_label_dirichlet,
@@ -1107,12 +1189,20 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                     and not response_fast_path
                     and (self.top_m is None or self.top_m >= K)
                 ):
+                    self._begin_utility_draw_capture(
+                        share_response_draws=False,
+                    )
                     U_col = self._ig_channel_full_batch(
                         r=r_cand_prior,
                         alpha=alpha,
                         beta=beta,
                         gamma=gamma_cand,
                         rng=rng,
+                    )
+                    self._store_utility_draws_column(
+                        utility_draws,
+                        j_a,
+                        n_candidates,
                     )
                     if available_mask is not None:
                         U_col = np.where(available_mask[:, j_a], U_col, np.nan)
@@ -1125,7 +1215,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 y_eq = Y_response
                 row_responsibility_obs = responsibility_response
                 for z in range(K):
-                    K_row = K_obs_cand * row_responsibility_obs[:, [z]]
+                    K_row = K_evidence_cand * row_responsibility_obs[:, [z]]
                     a_z, b_z, _ = self.parzen_beta_posterior(
                         K=K_row,
                         p=y_eq[:, z],
@@ -1143,16 +1233,19 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 t0 = time.perf_counter()
                 row_responsibility_obs = responsibility_response
                 if response_fast_path:
-                    K_full = K_obs_cand
+                    K_full = K_evidence_cand
                     Y_full = Y_response
                     responsibility_full = row_responsibility_obs
                 elif obs_indices_by_annotator is not None:
                     obs_idx_a = obs_indices_by_annotator[a]
-                    K_full = Kx_obs_cand[obs_idx_a]
+                    K_full = (
+                        Kx_obs_cand[obs_idx_a]
+                        * evidence_weight_obs[obs_idx_a, None]
+                    )
                     Y_full = y_obs_oh[obs_idx_a]
                     responsibility_full = row_responsibility_obs[obs_idx_a]
                 else:
-                    K_full = K_obs_cand
+                    K_full = K_evidence_cand
                     Y_full = y_obs_oh
                     responsibility_full = row_responsibility_obs
                 if uses_channel_prior:
@@ -1214,6 +1307,10 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                         n_candidates,
                     )
 
+            self._begin_utility_draw_capture(
+                share_response_draws=response_fast_path,
+            )
+
             # Vectorized fast paths for full-K variants.
             if (
                 self.channel_variant == "channel"
@@ -1234,6 +1331,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                         gamma=gamma_cand,
                         rng=rng,
                     )
+                self._store_utility_draws_column(
+                    utility_draws,
+                    j_a,
+                    n_candidates,
+                )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
@@ -1251,6 +1353,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                     gamma=gamma_cand,
                     top_m=int(self.top_m),
                     rng=rng,
+                )
+                self._store_utility_draws_column(
+                    utility_draws,
+                    j_a,
+                    n_candidates,
                 )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
@@ -1276,6 +1383,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                         K_pair=K_pair_for_gain,
                         rng=rng,
                     )
+                self._store_utility_draws_column(
+                    utility_draws,
+                    j_a,
+                    n_candidates,
+                )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
@@ -1296,6 +1408,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                         beta=beta,
                         rng=rng,
                     )
+                self._store_utility_draws_column(
+                    utility_draws,
+                    j_a,
+                    n_candidates,
+                )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
@@ -1316,6 +1433,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                         beta=beta_diag,
                         rng=rng,
                     )
+                self._store_utility_draws_column(
+                    utility_draws,
+                    j_a,
+                    n_candidates,
+                )
                 if available_mask is not None:
                     U_col = np.where(available_mask[:, j_a], U_col, np.nan)
                 U[:, j_a] = U_col
@@ -1335,6 +1457,11 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                         delta=confusion_rows,
                         rng=rng,
                     )
+                self._store_utility_draws_column(
+                    utility_draws,
+                    j_a,
+                    n_candidates,
+                )
                 if profile:
                     self._profile_add(timings, "gain_computation", t0)
                 if available_mask is not None:
@@ -1348,6 +1475,14 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
 
         if available_mask is not None:
             U = np.where(available_mask, U, np.nan)
+            if utility_draws is not None:
+                utility_draws = np.where(
+                    available_mask[:, :, None],
+                    utility_draws,
+                    np.nan,
+                )
+
+        self.last_utility_draws_ = utility_draws
 
         if profile:
             self._profile_add(timings, "total", t_total)
@@ -1384,6 +1519,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             X_obs_emb=X_obs_emb,
             obs_s=obs_s,
             eps=eps,
+        )
+        evidence_weight_obs = self._observed_evidence_weight(
+            observed_prior_obs,
+        )
+        self._resolved_observed_evidence_weight = evidence_weight_obs
+        self._resolved_observed_entropy = self._normalized_entropy(
+            observed_prior_obs,
         )
         responsibility_obs = observed_prior_obs.copy()
         m_classifier = np.clip(
@@ -1517,6 +1659,42 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             responsibility_obs,
             "classifier",
         )
+
+    @staticmethod
+    def _normalized_entropy(p: np.ndarray, eps: float = 1e-15) -> np.ndarray:
+        p = np.asarray(p, dtype=float)
+        if p.ndim != 2:
+            raise ValueError("p must have shape (n_obs, n_classes).")
+        K = p.shape[1]
+        if K < 2:
+            return np.zeros(p.shape[0], dtype=float)
+        p = np.clip(p, eps, 1.0)
+        p = p / np.maximum(p.sum(axis=1, keepdims=True), eps)
+        entropy = -np.sum(p * np.log(p), axis=1)
+        return np.clip(entropy / np.log(K), 0.0, 1.0)
+
+    def _observed_evidence_weight(
+        self,
+        observed_prior: np.ndarray,
+    ) -> np.ndarray:
+        observed_prior = np.asarray(observed_prior, dtype=float)
+        if observed_prior.ndim != 2:
+            raise ValueError(
+                "observed_prior must have shape (n_obs, n_classes)."
+            )
+        if self.observed_evidence_weighting == "none":
+            return np.ones(observed_prior.shape[0], dtype=float)
+
+        K = observed_prior.shape[1]
+        if K < 2:
+            return np.ones(observed_prior.shape[0], dtype=float)
+        certainty = (
+            K * np.sum(observed_prior * observed_prior, axis=1) - 1.0
+        ) / (K - 1.0)
+        certainty = np.clip(certainty, 0.0, 1.0)
+        floor = self.observed_evidence_weight_floor
+        weight = floor + (1.0 - floor) * certainty
+        return np.clip(weight, 0.0, 1.0)
 
     def _resolve_observed_class_prior_probabilities(
         self,
@@ -2296,11 +2474,19 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 beta=beta,
             )[:, None, :]
         else:
-            thetas = rng.beta(
-                alpha[:, None, :],
-                beta[:, None, :],
-                size=(S, T, K),
-            ).astype(float)
+            if self._shared_rows_enabled(alpha):
+                theta0 = rng.beta(
+                    alpha[:1, None, :],
+                    beta[:1, None, :],
+                    size=(1, T, K),
+                ).astype(float)
+                thetas = np.broadcast_to(theta0, (S, T, K)).copy()
+            else:
+                thetas = rng.beta(
+                    alpha[:, None, :],
+                    beta[:, None, :],
+                    size=(S, T, K),
+                ).astype(float)
 
         off = (1.0 - thetas) / (K - 1)
         Cs = np.repeat(off[..., None], K, axis=-1)
@@ -2336,11 +2522,19 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 beta=beta,
             )[:, None, :]
         else:
-            thetas = rng.beta(
-                alpha[:, None, :],
-                beta[:, None, :],
-                size=(S, T, K),
-            ).astype(float)
+            if self._shared_rows_enabled(alpha):
+                theta0 = rng.beta(
+                    alpha[:1, None, :],
+                    beta[:1, None, :],
+                    size=(1, T, K),
+                ).astype(float)
+                thetas = np.broadcast_to(theta0, (S, T, K)).copy()
+            else:
+                thetas = rng.beta(
+                    alpha[:, None, :],
+                    beta[:, None, :],
+                    size=(S, T, K),
+                ).astype(float)
 
         acc_draws = np.einsum("stk,stk->st", r, thetas, optimize=True)
         return self._aggregate_gain_draws(acc_draws)
@@ -2442,8 +2636,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             alpha = np.clip(delta[:, None, :, :], 1e-12, None)
             if T != 1:
                 alpha = np.repeat(alpha, T, axis=1)
-            X = rng.gamma(shape=alpha, scale=1.0)
-            C = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
+            if self._shared_rows_enabled(alpha):
+                X0 = rng.gamma(shape=alpha[:1], scale=1.0)
+                C0 = X0 / np.maximum(X0.sum(axis=3, keepdims=True), 1e-12)
+                C = np.broadcast_to(C0, (r.shape[0], *C0.shape[1:])).copy()
+            else:
+                X = rng.gamma(shape=alpha, scale=1.0)
+                C = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
             diag = np.diagonal(C, axis1=2, axis2=3)
             acc_draws = np.einsum("stk,stk->st", r, diag, optimize=True)
 
@@ -2464,8 +2663,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             alpha = np.clip(delta[:, None, :, :], 1e-12, None)
             if T != 1:
                 alpha = np.repeat(alpha, T, axis=1)
-            X = rng.gamma(shape=alpha, scale=1.0)
-            Cs = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
+            if self._shared_rows_enabled(alpha):
+                X0 = rng.gamma(shape=alpha[:1], scale=1.0)
+                C0 = X0 / np.maximum(X0.sum(axis=3, keepdims=True), 1e-12)
+                Cs = np.broadcast_to(C0, (r.shape[0], *C0.shape[1:])).copy()
+            else:
+                X = rng.gamma(shape=alpha, scale=1.0)
+                Cs = X / np.maximum(X.sum(axis=3, keepdims=True), 1e-12)
 
         ig_draws = self._pair_gain(
             r,
@@ -2700,6 +2904,50 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
         P = P / np.maximum(P.sum(axis=-1, keepdims=True), eps)
         return -(P * (np.log(P) / np.log(2.0))).sum(axis=-1)
 
+    def _begin_utility_draw_capture(self, *, share_response_draws: bool):
+        if self.store_utility_draws:
+            self._utility_draw_capture_parts = []
+            self._share_response_draws_for_current_call = bool(
+                share_response_draws
+            )
+        else:
+            self._utility_draw_capture_parts = None
+            self._share_response_draws_for_current_call = False
+
+    def _store_utility_draws_column(
+        self,
+        utility_draws: np.ndarray | None,
+        annotator_position: int,
+        n_candidates: int,
+    ):
+        self._share_response_draws_for_current_call = False
+        if utility_draws is None:
+            self._utility_draw_capture_parts = None
+            return
+        parts = self._utility_draw_capture_parts
+        self._utility_draw_capture_parts = None
+        if not parts:
+            return
+        draws = np.concatenate(parts, axis=0)
+        if draws.shape != (n_candidates, utility_draws.shape[2]):
+            raise ValueError(
+                "Captured utility draws must have shape "
+                f"{(n_candidates, utility_draws.shape[2])}, got "
+                f"{draws.shape}."
+            )
+        utility_draws[:, annotator_position, :] = draws
+
+    def _capture_gain_draws(self, gain_draws: np.ndarray):
+        parts = self._utility_draw_capture_parts
+        if parts is not None:
+            parts.append(np.asarray(gain_draws, dtype=float).copy())
+
+    def _shared_rows_enabled(self, value: np.ndarray) -> bool:
+        return (
+            bool(self._share_response_draws_for_current_call)
+            and np.asarray(value).shape[0] > 1
+        )
+
     def _sample_theta_batch(
         self,
         *,
@@ -2717,6 +2965,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                 alpha=alpha,
                 beta=beta,
             )[:, None]
+        if self._shared_rows_enabled(alpha):
+            theta0 = rng.beta(
+                alpha[:1, None],
+                beta[:1, None],
+                size=(1, n_draws),
+            ).astype(float)
+            return np.broadcast_to(theta0, (alpha.shape[0], n_draws)).copy()
         return rng.beta(
             alpha[:, None],
             beta[:, None],
@@ -2747,6 +3002,13 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
                     alpha = np.repeat(alpha, n_draws, axis=1)
             elif alpha.shape[1] != n_draws:
                 raise ValueError("3D gamma must agree with n_draws.")
+            if self._shared_rows_enabled(alpha):
+                x0 = rng.gamma(shape=alpha[:1], scale=1.0)
+                x0 = x0 / np.maximum(x0.sum(axis=-1, keepdims=True), 1e-12)
+                return np.broadcast_to(
+                    x0,
+                    (alpha.shape[0], *x0.shape[1:]),
+                ).copy()
             x = rng.gamma(shape=alpha, scale=1.0)
             return x / np.maximum(x.sum(axis=-1, keepdims=True), 1e-12)
 
@@ -2774,6 +3036,7 @@ class KernelSmoothedBayesianAnnotatorGain(PairScorer):
             raise ValueError(
                 "gain_draws must have shape (n_samples, n_draws)."
             )
+        self._capture_gain_draws(gain_draws)
         if self.gain_ucb_quantile is None:
             return gain_draws.mean(axis=1)
         return np.quantile(

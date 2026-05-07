@@ -6,44 +6,44 @@ accuracy_strength: 1.0 # to be investigated
 
 # Correctness mode
 correctness_mode: "classifier"
-observed_class_prior: "classifier" # classifier or kernel
-observed_class_prior_leave_one_out: false
+observed_class_prior: "kernel" # classifier or kernel
+observed_class_prior_leave_one_out: true
 
 # Sample / annotator kernels
 gamma_x: "median" # to be investigated
 gamma_x_scope: "global" # to be investigated
 gamma_a: "median"
 use_annotator_embeddings: false
-annotator_lambda: 1.0 # 0=local only, 1=global only
+annotator_lambda: 0.0 # 0=local only, 1=global only
 
 # Channel model
-channel_variant: "channel" 
-full_confusion_prior_source: "accuracy"
-full_confusion_prior_strength: null
-full_confusion_channel_prior_strength: 1.0
+channel_variant: "full_confusion"
+full_confusion_prior_source: "channel"
+full_confusion_prior_strength: 3.0 # to be investigated
+full_confusion_channel_prior_strength: 1.0 # deprecated alias
 channel_label_dirichlet_strength: 1.0 # to be investigated
 channel_wrong_label_mode: "normalize" # to be investigated
 
 # Latent class prior
-class_prior: "classifier" # to be investigated
+class_prior: "kernel" # to be investigated
 class_prior_strength: 1.0 # to be investigated
 class_prior_lambda: 0.0 # 0=local only, 1=global only
-use_ess_class_prior: false
+use_ess_class_prior: true
 tau_class_prior: 1.0
-sample_class_prior: false # to be investigated
+sample_class_prior: true # to be investigated
 
 # Posterior concentration / sampling
 use_ess_beta: true
 tau_beta: 1.0
 use_ess_label_dirichlet: true
 tau_label_dirichlet: 1.0 # to be investigated
-n_mc_samples: 20
+n_mc_samples: 1
 gain_ucb_quantile: null # use empirical gain posterior quantile over MC draws
 sample_label_dirichlet: true # to be investigated
 store_utility_draws: true
+gain_batch_size: 128
 
 # Approximation / utility
 top_m: null
-gain_type: entropy # to be investigated
-entropy_response_cap: false
+gain_type: entropy
 random_state: ${seed}

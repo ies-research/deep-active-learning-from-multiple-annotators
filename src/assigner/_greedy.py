@@ -54,7 +54,8 @@ class GreedyPairAssigner(PairAssigner):
 
     Parameters (annealed across calls)
     ---------------------------------
-    selection : {"greedy","epsilon_greedy","softmax"}, default="greedy"
+    selection : {"greedy","epsilon_greedy","softmax", /
+            "posterior_best_annotator"}, default="greedy"
 
     epsilon_max, epsilon_min : float
         Epsilon endpoints for epsilon-greedy.
@@ -68,6 +69,13 @@ class GreedyPairAssigner(PairAssigner):
     temperature_T : int, default=100
         Number of `_assign` calls over which temperature goes from max -> min.
     temperature_schedule : {"constant","cosine"}, default="cosine"
+    explore_top_m : int or None, default=None
+        Restrict epsilon exploration to the best M candidates. The scope is
+        controlled by `explore_top_m_scope`.
+    explore_top_m_scope : {"pair","annotator"}, default="pair"
+        If "pair", keep the best M feasible sample-annotator pairs globally.
+        If "annotator", keep the best M feasible annotators within each
+        feasible sample row, then sample uniformly over the retained pairs.
     """
 
     def __init__(
@@ -88,15 +96,28 @@ class GreedyPairAssigner(PairAssigner):
         max_per_sample=None,
         max_per_annotator=None,
         explore_top_m=None,
+        explore_top_m_scope="pair",
+        posterior_best_temperature=1.0,
+        posterior_best_floor=0.0,
         random_state=None,
     ):
         selection = str(selection)
         coverage = str(coverage)
+        explore_top_m_scope = str(explore_top_m_scope)
 
-        if selection not in {"greedy", "epsilon_greedy", "softmax"}:
+        if selection not in {
+            "greedy",
+            "epsilon_greedy",
+            "softmax",
+            "posterior_best_annotator",
+        }:
             raise ValueError(f"Invalid selection={selection!r}.")
         if coverage not in {"none", "hard", "soft"}:
             raise ValueError(f"Invalid coverage={coverage!r}.")
+        if explore_top_m_scope not in {"pair", "annotator"}:
+            raise ValueError(
+                "explore_top_m_scope must be one of {'pair', 'annotator'}."
+            )
 
         eps_max = float(epsilon_max)
         eps_min = eps_max if epsilon_min is None else float(epsilon_min)
@@ -117,6 +138,12 @@ class GreedyPairAssigner(PairAssigner):
             raise ValueError("max_per_annotator must be positive or None.")
         if explore_top_m is not None and int(explore_top_m) <= 0:
             raise ValueError("explore_top_m must be positive or None.")
+        posterior_best_temperature = float(posterior_best_temperature)
+        posterior_best_floor = float(posterior_best_floor)
+        if posterior_best_temperature <= 0.0:
+            raise ValueError("posterior_best_temperature must be > 0.")
+        if posterior_best_floor < 0.0:
+            raise ValueError("posterior_best_floor must be >= 0.")
 
         self.selection = selection
         self.coverage = coverage
@@ -130,6 +157,9 @@ class GreedyPairAssigner(PairAssigner):
         self.explore_top_m = (
             None if explore_top_m is None else int(explore_top_m)
         )
+        self.explore_top_m_scope = explore_top_m_scope
+        self.posterior_best_temperature = posterior_best_temperature
+        self.posterior_best_floor = posterior_best_floor
         self.random_state = check_random_state(random_state)
 
         # Call-based schedules (stateful)
@@ -186,6 +216,10 @@ class GreedyPairAssigner(PairAssigner):
             budget = int(budget)
             if budget <= 0 or S == 0 or A == 0:
                 return np.empty((0, 2), dtype=int)
+            utility_draws = self._validate_utility_draws(
+                kwargs.get("utility_draws"),
+                U.shape,
+            )
 
             rng = self.random_state
             sel = []
@@ -243,9 +277,16 @@ class GreedyPairAssigner(PairAssigner):
                         if not np.isfinite(score.ravel()[flat_idx]):
                             break
 
-                else:  # softmax
+                elif self.selection == "softmax":
                     flat_idx = self._sample_softmax(
                         score, feasible, rng, temperature=temp
+                    )
+                else:  # posterior_best_annotator
+                    flat_idx = self._sample_posterior_best_annotator(
+                        score=score,
+                        feasible=feasible,
+                        utility_draws=utility_draws,
+                        rng=rng,
                     )
 
                 s_loc, a_loc = np.unravel_index(flat_idx, (S, A))
@@ -280,6 +321,16 @@ class GreedyPairAssigner(PairAssigner):
 
         if (
             self.explore_top_m is not None
+            and self.explore_top_m_scope == "annotator"
+        ):
+            return self._sample_uniform_over_row_topm_annotators(
+                score,
+                feasible,
+                rng,
+            )
+
+        if (
+            self.explore_top_m is not None
             and feas_idx.size > self.explore_top_m
         ):
             feas_scores = score.ravel()[feas_idx]
@@ -289,6 +340,28 @@ class GreedyPairAssigner(PairAssigner):
             feas_idx = feas_idx[top]
 
         return int(feas_idx[rng.randint(feas_idx.size)])
+
+    def _sample_uniform_over_row_topm_annotators(self, score, feasible, rng):
+        score = np.asarray(score, dtype=float)
+        feasible = np.asarray(feasible, dtype=bool)
+        S, A = score.shape
+        keep = np.zeros_like(feasible, dtype=bool)
+        m = int(self.explore_top_m)
+
+        for s in np.flatnonzero(feasible.any(axis=1)):
+            a_idx = np.flatnonzero(feasible[s])
+            if a_idx.size <= m:
+                keep[s, a_idx] = True
+                continue
+
+            row_scores = score[s, a_idx]
+            top = np.argpartition(row_scores, -m)[-m:]
+            keep[s, a_idx[top]] = True
+
+        top_idx = np.flatnonzero(keep.ravel())
+        if top_idx.size == 0:
+            return 0
+        return int(top_idx[rng.randint(top_idx.size)])
 
     def _sample_softmax(self, score, feasible, rng, temperature: float):
         feas_idx = np.flatnonzero(feasible.ravel())
@@ -309,3 +382,85 @@ class GreedyPairAssigner(PairAssigner):
         probs = exps / np.sum(exps)
         j = int(rng.choice(feas_idx.size, p=probs))
         return int(feas_idx[j])
+
+    def _validate_utility_draws(self, utility_draws, shape):
+        if self.selection != "posterior_best_annotator":
+            return None
+        if utility_draws is None:
+            raise ValueError(
+                "selection='posterior_best_annotator' requires utility_draws."
+            )
+        utility_draws = np.asarray(utility_draws, dtype=float)
+        if utility_draws.ndim != 3:
+            raise ValueError(
+                "utility_draws must have shape "
+                "(n_samples, n_annotators, n_draws)."
+            )
+        if utility_draws.shape[:2] != tuple(shape):
+            raise ValueError(
+                "utility_draws must agree with utilities on samples and "
+                f"annotators, got {utility_draws.shape[:2]} and {shape}."
+            )
+        if utility_draws.shape[2] < 2:
+            raise ValueError(
+                "posterior_best_annotator requires at least two utility draws."
+            )
+        return utility_draws
+
+    def _sample_posterior_best_annotator(
+        self,
+        *,
+        score,
+        feasible,
+        utility_draws,
+        rng,
+    ):
+        row_score = np.full(score.shape[0], -np.inf, dtype=float)
+        for s in np.flatnonzero(feasible.any(axis=1)):
+            row_values = score[s, feasible[s]]
+            finite = np.isfinite(row_values)
+            if finite.any():
+                row_score[s] = float(np.max(row_values[finite]))
+        feasible_rows = np.flatnonzero(np.isfinite(row_score))
+        if feasible_rows.size == 0:
+            feas_idx = np.flatnonzero(feasible.ravel())
+            return int(feas_idx[rng.randint(feas_idx.size)])
+
+        max_row_score = np.max(row_score[feasible_rows])
+        best_rows = feasible_rows[np.isclose(row_score[feasible_rows], max_row_score)]
+        s_loc = int(best_rows[rng.randint(best_rows.size)])
+        a_candidates = np.flatnonzero(feasible[s_loc])
+        p_best = self._posterior_best_probabilities_for_row(
+            utility_draws[s_loc],
+            a_candidates,
+        )
+        p = p_best + self.posterior_best_floor
+        if not np.isfinite(p).all() or p.sum() <= 0.0:
+            p = np.ones_like(p, dtype=float)
+        p = p / p.sum()
+        logits = np.log(np.clip(p, 1e-300, None)) / self.posterior_best_temperature
+        logits = logits - np.max(logits)
+        probs = np.exp(logits)
+        probs = probs / probs.sum()
+        a_loc = int(a_candidates[int(rng.choice(a_candidates.size, p=probs))])
+        return int(np.ravel_multi_index((s_loc, a_loc), score.shape))
+
+    @staticmethod
+    def _posterior_best_probabilities_for_row(row_draws, a_candidates):
+        draws = np.asarray(row_draws, dtype=float)[a_candidates]
+        finite = np.isfinite(draws)
+        valid_draw = finite.any(axis=0)
+        if not np.any(valid_draw):
+            return np.full(a_candidates.size, 1.0 / a_candidates.size)
+
+        draws = draws[:, valid_draw]
+        finite = finite[:, valid_draw]
+        draws = np.where(finite, draws, -np.inf)
+        max_draw = np.max(draws, axis=0, keepdims=True)
+        is_best = np.isclose(draws, max_draw) & finite
+        n_best = np.maximum(is_best.sum(axis=0, keepdims=True), 1)
+        credit = is_best / n_best
+        p_best = credit.mean(axis=1)
+        if p_best.sum() <= 0.0:
+            return np.full(a_candidates.size, 1.0 / a_candidates.size)
+        return p_best / p_best.sum()
