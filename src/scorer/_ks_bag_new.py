@@ -12,9 +12,34 @@ from ._base import PairScorer
 
 _PRESETS = {
     "global_mace": {
-        "base_channel": "mace",
+        "base_channel": "global_mace",
         "evidence": "none",
         "posterior": "base_only",
+    },
+    "global_mace_mace_prior": {
+        "base_channel": "global_mace",
+        "evidence": "global_mace_counts",
+        "posterior": "global_mace",
+    },
+    "local_mace_mace_prior": {
+        "base_channel": "global_mace",
+        "evidence": "local_kernel_mace_counts",
+        "posterior": "local_mace",
+    },
+    "global_accuracy_uniform": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "none",
+        "posterior": "base_only",
+    },
+    "global_accuracy_uniform_accuracy_prior": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "global_accuracy_counts",
+        "posterior": "global_accuracy_uniform",
+    },
+    "local_accuracy_uniform_accuracy_prior": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "local_kernel_accuracy_counts",
+        "posterior": "local_accuracy_uniform",
     },
     "global_full_uniform": {
         "base_channel": "uniform",
@@ -22,7 +47,7 @@ _PRESETS = {
         "posterior": "dirichlet_global",
     },
     "global_full_mace_prior": {
-        "base_channel": "mace",
+        "base_channel": "global_mace",
         "evidence": "global_soft_counts",
         "posterior": "dirichlet_global",
     },
@@ -32,7 +57,22 @@ _PRESETS = {
         "posterior": "dirichlet_local",
     },
     "local_full_mace_prior": {
-        "base_channel": "mace",
+        "base_channel": "global_mace",
+        "evidence": "local_kernel_soft_counts",
+        "posterior": "dirichlet_local",
+    },
+    "local_full_local_mace_prior": {
+        "base_channel": "local_mace",
+        "evidence": "local_kernel_soft_counts",
+        "posterior": "dirichlet_local",
+    },
+    "local_full_uniform_accuracy_prior": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "local_kernel_soft_counts",
+        "posterior": "dirichlet_local",
+    },
+    "local_full_local_uniform_accuracy_prior": {
+        "base_channel": "local_accuracy_uniform",
         "evidence": "local_kernel_soft_counts",
         "posterior": "dirichlet_local",
     },
@@ -42,9 +82,15 @@ _PRESETS = {
 @dataclass
 class ChannelEstimationResult:
     base_channel: np.ndarray
-    evidence_counts: np.ndarray | None
+    evidence_counts: np.ndarray | MaceEvidenceCounts | AccuracyEvidenceCounts | None
     posterior_alpha: np.ndarray | None
     posterior_channel: np.ndarray
+    base_mace_params: "MaceChannelParameters | None"
+    evidence_mace_counts: "MaceEvidenceCounts | None"
+    posterior_mace_params: "MaceChannelParameters | None"
+    base_accuracy_params: "AccuracyUniformChannelParameters | None"
+    evidence_accuracy_counts: "AccuracyEvidenceCounts | None"
+    posterior_accuracy_params: "AccuracyUniformChannelParameters | None"
     class_prior: np.ndarray
     class_prior_alpha: np.ndarray | None
     prior_mask: np.ndarray
@@ -53,6 +99,35 @@ class ChannelEstimationResult:
     uses_same_prior_and_evidence: bool
     sample_indices: np.ndarray
     annotator_indices: np.ndarray
+
+
+@dataclass
+class MaceChannelParameters:
+    theta: np.ndarray
+    g: np.ndarray
+    theta_success_alpha: np.ndarray | None = None
+    theta_failure_beta: np.ndarray | None = None
+    g_alpha: np.ndarray | None = None
+
+
+@dataclass
+class MaceEvidenceCounts:
+    theta_success: np.ndarray
+    theta_failure: np.ndarray
+    g_counts: np.ndarray
+
+
+@dataclass
+class AccuracyUniformChannelParameters:
+    theta: np.ndarray
+    alpha: np.ndarray | None = None
+    beta: np.ndarray | None = None
+
+
+@dataclass
+class AccuracyEvidenceCounts:
+    success: np.ndarray
+    failure: np.ndarray
 
 
 def _normalize_axis(X: np.ndarray, *, axis: int = -1, eps: float = 1e-12):
@@ -361,6 +436,438 @@ def _compute_local_kernel_soft_counts(
     return counts
 
 
+def _mace_bias_prior_vector(bias_prior, n_classes: int) -> np.ndarray:
+    beta = np.asarray(bias_prior, dtype=float)
+    if beta.ndim == 0:
+        beta = np.full(n_classes, float(beta), dtype=float)
+    if beta.shape != (n_classes,) or np.any(beta <= 0):
+        raise ValueError("mace_bias_prior must be a positive scalar or length-K vector.")
+    return beta
+
+
+def _mace_channel_from_theta_g(
+    theta: np.ndarray,
+    g: np.ndarray,
+    *,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    theta = np.asarray(theta, dtype=float)
+    g = _normalize_axis(np.asarray(g, dtype=float), axis=-1, eps=eps)
+    eye = np.eye(n_classes, dtype=float)
+    C = theta[..., None, None] * eye + (1.0 - theta)[..., None, None] * g[..., None, :]
+    return _normalize_axis(C, axis=-1, eps=eps)
+
+
+def _accuracy_uniform_channel_from_theta(
+    theta: np.ndarray,
+    *,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    if n_classes < 2:
+        raise ValueError("accuracy_uniform channels require at least 2 classes.")
+    theta = np.asarray(theta, dtype=float)
+    C = np.full((*theta.shape, n_classes, n_classes), 0.0, dtype=float)
+    off_diag = (1.0 - theta) / (n_classes - 1)
+    C[...] = off_diag[..., None, None]
+    diag = np.arange(n_classes)
+    C[..., diag, diag] = theta[..., None]
+    return _normalize_axis(C, axis=-1, eps=eps)
+
+
+def _compute_global_accuracy_counts(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    n_annotators: int,
+    annotator_similarity: np.ndarray | None = None,
+) -> AccuracyEvidenceCounts:
+    success = np.zeros(n_annotators, dtype=float)
+    failure = np.zeros(n_annotators, dtype=float)
+    obs_s, obs_a = np.where(observation_mask)
+    if obs_s.size == 0:
+        return AccuracyEvidenceCounts(success, failure)
+    obs_y = y_idx[obs_s, obs_a]
+    q_y = P[obs_s, obs_y]
+    if annotator_similarity is not None:
+        annotator_similarity = np.asarray(annotator_similarity, dtype=float)
+        if annotator_similarity.shape != (n_annotators, n_annotators):
+            raise ValueError(
+                "annotator_similarity must have shape "
+                f"{(n_annotators, n_annotators)}, got {annotator_similarity.shape}."
+            )
+    for target_m in range(n_annotators):
+        if annotator_similarity is None:
+            sim = (obs_a == target_m).astype(float)
+        else:
+            sim = annotator_similarity[obs_a, target_m]
+        scale = weights[obs_s] * sim
+        if not np.any(scale > 0):
+            continue
+        success[target_m] = np.sum(scale * q_y)
+        failure[target_m] = np.sum(scale * (1.0 - q_y))
+    return AccuracyEvidenceCounts(success, failure)
+
+
+def _compute_local_kernel_accuracy_counts(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    sample_embeddings: np.ndarray,
+    candidate_indices: np.ndarray,
+    annotator_indices: np.ndarray,
+    n_annotators: int,
+    kernel: str,
+    gamma,
+    normalize_embeddings: bool,
+    annotator_similarity: np.ndarray | None = None,
+    eps: float = 1e-12,
+) -> AccuracyEvidenceCounts:
+    candidate_indices = np.asarray(candidate_indices, dtype=int)
+    annotator_indices = np.asarray(annotator_indices, dtype=int)
+    shape = (len(candidate_indices), len(annotator_indices))
+    success = np.zeros(shape, dtype=float)
+    failure = np.zeros(shape, dtype=float)
+    obs_s, obs_a = np.where(observation_mask)
+    if obs_s.size == 0 or len(candidate_indices) == 0:
+        return AccuracyEvidenceCounts(success, failure)
+    obs_y = y_idx[obs_s, obs_a]
+    q_y = P[obs_s, obs_y]
+    Kx = _pairwise_kernel(
+        sample_embeddings[obs_s],
+        sample_embeddings[candidate_indices],
+        kernel=kernel,
+        gamma=gamma,
+        normalize_embeddings=normalize_embeddings,
+        eps=eps,
+    )
+    if annotator_similarity is not None:
+        annotator_similarity = np.asarray(annotator_similarity, dtype=float)
+        if annotator_similarity.shape != (n_annotators, n_annotators):
+            raise ValueError(
+                "annotator_similarity must have shape "
+                f"{(n_annotators, n_annotators)}, got {annotator_similarity.shape}."
+            )
+    for j, target_m in enumerate(annotator_indices):
+        if annotator_similarity is None:
+            sim = (obs_a == target_m).astype(float)
+        else:
+            sim = annotator_similarity[obs_a, target_m]
+        scale = weights[obs_s] * sim
+        if not np.any(scale > 0):
+            continue
+        V = Kx * scale[:, None]
+        success[:, j] = V.T @ q_y
+        failure[:, j] = V.T @ (1.0 - q_y)
+    return AccuracyEvidenceCounts(success, failure)
+
+
+def _accuracy_params_from_counts(
+    counts: AccuracyEvidenceCounts,
+    *,
+    alpha_prior: np.ndarray,
+    beta_prior: np.ndarray,
+    eps: float = 1e-12,
+) -> AccuracyUniformChannelParameters:
+    alpha = np.asarray(alpha_prior, dtype=float) + counts.success
+    beta = np.asarray(beta_prior, dtype=float) + counts.failure
+    theta = alpha / np.maximum(alpha + beta, eps)
+    return AccuracyUniformChannelParameters(theta=theta, alpha=alpha, beta=beta)
+
+
+def _estimate_global_accuracy_uniform_parameters(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    n_annotators: int,
+    theta_prior: tuple[float, float],
+    annotator_similarity: np.ndarray | None = None,
+    eps: float = 1e-12,
+) -> AccuracyUniformChannelParameters:
+    a, b = map(float, theta_prior)
+    if a <= 0 or b <= 0:
+        raise ValueError("mace_theta_prior entries must be positive.")
+    counts = _compute_global_accuracy_counts(
+        P,
+        y_idx,
+        observation_mask,
+        weights,
+        n_annotators=n_annotators,
+        annotator_similarity=annotator_similarity,
+    )
+    return _accuracy_params_from_counts(
+        counts,
+        alpha_prior=np.full(n_annotators, a, dtype=float),
+        beta_prior=np.full(n_annotators, b, dtype=float),
+        eps=eps,
+    )
+
+
+def _estimate_local_accuracy_uniform_parameters(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    sample_embeddings: np.ndarray,
+    candidate_indices: np.ndarray,
+    annotator_indices: np.ndarray,
+    n_annotators: int,
+    theta_prior: tuple[float, float],
+    kernel: str,
+    gamma,
+    normalize_embeddings: bool,
+    annotator_similarity: np.ndarray | None = None,
+    eps: float = 1e-12,
+) -> AccuracyUniformChannelParameters:
+    a, b = map(float, theta_prior)
+    if a <= 0 or b <= 0:
+        raise ValueError("mace_theta_prior entries must be positive.")
+    counts = _compute_local_kernel_accuracy_counts(
+        P,
+        y_idx,
+        observation_mask,
+        weights,
+        sample_embeddings=sample_embeddings,
+        candidate_indices=candidate_indices,
+        annotator_indices=annotator_indices,
+        n_annotators=n_annotators,
+        kernel=kernel,
+        gamma=gamma,
+        normalize_embeddings=normalize_embeddings,
+        annotator_similarity=annotator_similarity,
+        eps=eps,
+    )
+    shape = (len(candidate_indices), len(annotator_indices))
+    return _accuracy_params_from_counts(
+        counts,
+        alpha_prior=np.full(shape, a, dtype=float),
+        beta_prior=np.full(shape, b, dtype=float),
+        eps=eps,
+    )
+
+
+def _compute_global_mace_counts(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    n_annotators: int,
+    n_classes: int,
+    annotator_similarity: np.ndarray | None = None,
+) -> MaceEvidenceCounts:
+    success = np.zeros(n_annotators, dtype=float)
+    failure = np.zeros(n_annotators, dtype=float)
+    g_counts = np.zeros((n_annotators, n_classes), dtype=float)
+    obs_s, obs_a = np.where(observation_mask)
+    if obs_s.size == 0:
+        return MaceEvidenceCounts(success, failure, g_counts)
+    obs_y = y_idx[obs_s, obs_a]
+    q_y = P[obs_s, obs_y]
+    if annotator_similarity is not None:
+        annotator_similarity = np.asarray(annotator_similarity, dtype=float)
+        if annotator_similarity.shape != (n_annotators, n_annotators):
+            raise ValueError(
+                "annotator_similarity must have shape "
+                f"{(n_annotators, n_annotators)}, got {annotator_similarity.shape}."
+            )
+    for target_m in range(n_annotators):
+        if annotator_similarity is None:
+            sim = (obs_a == target_m).astype(float)
+        else:
+            sim = annotator_similarity[obs_a, target_m]
+        scale = weights[obs_s] * sim
+        if not np.any(scale > 0):
+            continue
+        residual = scale * (1.0 - q_y)
+        success[target_m] = np.sum(scale * q_y)
+        failure[target_m] = np.sum(residual)
+        for c in range(n_classes):
+            take = obs_y == c
+            if np.any(take):
+                g_counts[target_m, c] = np.sum(residual[take])
+    return MaceEvidenceCounts(success, failure, g_counts)
+
+
+def _compute_local_kernel_mace_counts(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    sample_embeddings: np.ndarray,
+    candidate_indices: np.ndarray,
+    annotator_indices: np.ndarray,
+    n_annotators: int,
+    n_classes: int,
+    kernel: str,
+    gamma,
+    normalize_embeddings: bool,
+    annotator_similarity: np.ndarray | None = None,
+    eps: float = 1e-12,
+) -> MaceEvidenceCounts:
+    candidate_indices = np.asarray(candidate_indices, dtype=int)
+    annotator_indices = np.asarray(annotator_indices, dtype=int)
+    shape = (len(candidate_indices), len(annotator_indices))
+    success = np.zeros(shape, dtype=float)
+    failure = np.zeros(shape, dtype=float)
+    g_counts = np.zeros((*shape, n_classes), dtype=float)
+    obs_s, obs_a = np.where(observation_mask)
+    if obs_s.size == 0 or len(candidate_indices) == 0:
+        return MaceEvidenceCounts(success, failure, g_counts)
+    obs_y = y_idx[obs_s, obs_a]
+    q_y = P[obs_s, obs_y]
+    Kx = _pairwise_kernel(
+        sample_embeddings[obs_s],
+        sample_embeddings[candidate_indices],
+        kernel=kernel,
+        gamma=gamma,
+        normalize_embeddings=normalize_embeddings,
+        eps=eps,
+    )
+    if annotator_similarity is not None:
+        annotator_similarity = np.asarray(annotator_similarity, dtype=float)
+        if annotator_similarity.shape != (n_annotators, n_annotators):
+            raise ValueError(
+                "annotator_similarity must have shape "
+                f"{(n_annotators, n_annotators)}, got {annotator_similarity.shape}."
+            )
+    for j, target_m in enumerate(annotator_indices):
+        if annotator_similarity is None:
+            sim = (obs_a == target_m).astype(float)
+        else:
+            sim = annotator_similarity[obs_a, target_m]
+        scale = weights[obs_s] * sim
+        if not np.any(scale > 0):
+            continue
+        V = Kx * scale[:, None]
+        success[:, j] = V.T @ q_y
+        residual = V * (1.0 - q_y)[:, None]
+        failure[:, j] = residual.sum(axis=0)
+        for c in range(n_classes):
+            take = obs_y == c
+            if np.any(take):
+                g_counts[:, j, c] = residual[take].sum(axis=0)
+    return MaceEvidenceCounts(success, failure, g_counts)
+
+
+def _mace_params_from_counts(
+    counts: MaceEvidenceCounts,
+    *,
+    theta_success_prior: np.ndarray,
+    theta_failure_prior: np.ndarray,
+    g_prior: np.ndarray,
+    eps: float = 1e-12,
+) -> MaceChannelParameters:
+    theta_success_alpha = np.asarray(theta_success_prior, dtype=float) + counts.theta_success
+    theta_failure_beta = np.asarray(theta_failure_prior, dtype=float) + counts.theta_failure
+    g_alpha = np.asarray(g_prior, dtype=float) + counts.g_counts
+    theta = theta_success_alpha / np.maximum(
+        theta_success_alpha + theta_failure_beta,
+        eps,
+    )
+    g = _normalize_axis(g_alpha, axis=-1, eps=eps)
+    return MaceChannelParameters(
+        theta=theta,
+        g=g,
+        theta_success_alpha=theta_success_alpha,
+        theta_failure_beta=theta_failure_beta,
+        g_alpha=g_alpha,
+    )
+
+
+def _estimate_global_mace_parameters(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    n_annotators: int,
+    n_classes: int,
+    theta_prior: tuple[float, float],
+    bias_prior,
+    annotator_similarity: np.ndarray | None = None,
+    eps: float = 1e-12,
+) -> MaceChannelParameters:
+    a, b = map(float, theta_prior)
+    if a <= 0 or b <= 0:
+        raise ValueError("mace_theta_prior entries must be positive.")
+    beta = _mace_bias_prior_vector(bias_prior, n_classes)
+    counts = _compute_global_mace_counts(
+        P,
+        y_idx,
+        observation_mask,
+        weights,
+        n_annotators=n_annotators,
+        n_classes=n_classes,
+        annotator_similarity=annotator_similarity,
+    )
+    return _mace_params_from_counts(
+        counts,
+        theta_success_prior=np.full(n_annotators, a, dtype=float),
+        theta_failure_prior=np.full(n_annotators, b, dtype=float),
+        g_prior=np.broadcast_to(beta[None, :], (n_annotators, n_classes)),
+        eps=eps,
+    )
+
+
+def _estimate_local_mace_parameters(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    weights: np.ndarray,
+    *,
+    sample_embeddings: np.ndarray,
+    candidate_indices: np.ndarray,
+    annotator_indices: np.ndarray,
+    n_annotators: int,
+    n_classes: int,
+    theta_prior: tuple[float, float],
+    bias_prior,
+    kernel: str,
+    gamma,
+    normalize_embeddings: bool,
+    annotator_similarity: np.ndarray | None = None,
+    eps: float = 1e-12,
+) -> MaceChannelParameters:
+    a, b = map(float, theta_prior)
+    if a <= 0 or b <= 0:
+        raise ValueError("mace_theta_prior entries must be positive.")
+    beta = _mace_bias_prior_vector(bias_prior, n_classes)
+    counts = _compute_local_kernel_mace_counts(
+        P,
+        y_idx,
+        observation_mask,
+        weights,
+        sample_embeddings=sample_embeddings,
+        candidate_indices=candidate_indices,
+        annotator_indices=annotator_indices,
+        n_annotators=n_annotators,
+        n_classes=n_classes,
+        kernel=kernel,
+        gamma=gamma,
+        normalize_embeddings=normalize_embeddings,
+        annotator_similarity=annotator_similarity,
+        eps=eps,
+    )
+    shape = (len(candidate_indices), len(annotator_indices))
+    return _mace_params_from_counts(
+        counts,
+        theta_success_prior=np.full(shape, a, dtype=float),
+        theta_failure_prior=np.full(shape, b, dtype=float),
+        g_prior=np.broadcast_to(beta, (*shape, n_classes)),
+        eps=eps,
+    )
+
+
 def _estimate_base_uniform(n_annotators: int, n_classes: int) -> np.ndarray:
     return np.full((n_annotators, n_classes, n_classes), 1.0 / n_classes, dtype=float)
 
@@ -377,35 +884,23 @@ def _estimate_base_mace(
     bias_prior,
     eps: float = 1e-12,
 ) -> np.ndarray:
-    a, b = map(float, theta_prior)
-    if a <= 0 or b <= 0:
-        raise ValueError("mace_theta_prior entries must be positive.")
-    beta = np.asarray(bias_prior, dtype=float)
-    if beta.ndim == 0:
-        beta = np.full(n_classes, float(beta), dtype=float)
-    if beta.shape != (n_classes,) or np.any(beta <= 0):
-        raise ValueError("mace_bias_prior must be a positive scalar or length-K vector.")
-    B = np.empty((n_annotators, n_classes, n_classes), dtype=float)
-    eye = np.eye(n_classes, dtype=float)
-    for m in range(n_annotators):
-        rows = np.flatnonzero(observation_mask[:, m])
-        if rows.size == 0:
-            theta = a / (a + b)
-            g = beta / beta.sum()
-        else:
-            labels = y_idx[rows, m]
-            w = weights[rows]
-            q_y = P[rows, labels]
-            theta = (a + np.sum(w * q_y)) / (a + b + np.sum(w))
-            residual = w * (1.0 - q_y)
-            g_num = beta.copy()
-            for c in range(n_classes):
-                take = labels == c
-                if np.any(take):
-                    g_num[c] += np.sum(residual[take])
-            g = g_num / max(float(g_num.sum()), eps)
-        B[m] = theta * eye + (1.0 - theta) * g[None, :]
-    return _normalize_axis(B, axis=2, eps=eps)
+    params = _estimate_global_mace_parameters(
+        P,
+        y_idx,
+        observation_mask,
+        weights,
+        n_annotators=n_annotators,
+        n_classes=n_classes,
+        theta_prior=theta_prior,
+        bias_prior=bias_prior,
+        eps=eps,
+    )
+    return _mace_channel_from_theta_g(
+        params.theta,
+        params.g,
+        n_classes=n_classes,
+        eps=eps,
+    )
 
 
 def _estimate_base_diag_uniform(
@@ -477,6 +972,14 @@ def _combine_base_only(
     n_candidates: int,
     annotator_indices: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray | None]:
+    if B.ndim == 4:
+        expected = (n_candidates, len(annotator_indices))
+        if B.shape[:2] != expected:
+            raise ValueError(
+                "local base channel must have leading shape "
+                f"{expected}, got {B.shape[:2]}."
+            )
+        return B.copy(), None
     C = np.broadcast_to(
         B[np.asarray(annotator_indices, dtype=int)][None, :, :, :],
         (n_candidates, len(annotator_indices), B.shape[1], B.shape[2]),
@@ -515,10 +1018,222 @@ def _combine_dirichlet_local(
     annotator_indices: np.ndarray,
     eps: float = 1e-12,
 ) -> tuple[np.ndarray, np.ndarray]:
-    B_sel = B[np.asarray(annotator_indices, dtype=int)]
-    alpha = prior_strength * B_sel[None, :, :, :] + N_local
+    if B.ndim == 4:
+        if B.shape[:2] != N_local.shape[:2]:
+            raise ValueError(
+                "local base channel and local evidence counts must have matching "
+                f"candidate/annotator axes, got {B.shape[:2]} and {N_local.shape[:2]}."
+            )
+        B_sel = B
+    else:
+        B_sel = B[np.asarray(annotator_indices, dtype=int)]
+    alpha = prior_strength * B_sel + N_local if B.ndim == 4 else prior_strength * B_sel[None, :, :, :] + N_local
     C = _normalize_axis(alpha, axis=3, eps=eps)
     return C, alpha
+
+
+def _broadcast_global_mace_params(
+    params: MaceChannelParameters,
+    *,
+    n_candidates: int,
+    annotator_indices: np.ndarray,
+) -> MaceChannelParameters:
+    annotator_indices = np.asarray(annotator_indices, dtype=int)
+    theta = np.broadcast_to(
+        params.theta[annotator_indices][None, :],
+        (n_candidates, len(annotator_indices)),
+    ).copy()
+    g = np.broadcast_to(
+        params.g[annotator_indices][None, :, :],
+        (n_candidates, len(annotator_indices), params.g.shape[-1]),
+    ).copy()
+
+    def _maybe_broadcast(arr):
+        if arr is None:
+            return None
+        arr = np.asarray(arr, dtype=float)
+        if arr.ndim == 1:
+            return np.broadcast_to(
+                arr[annotator_indices][None, :],
+                theta.shape,
+            ).copy()
+        return np.broadcast_to(
+            arr[annotator_indices][None, :, :],
+            g.shape,
+        ).copy()
+
+    return MaceChannelParameters(
+        theta=theta,
+        g=g,
+        theta_success_alpha=_maybe_broadcast(params.theta_success_alpha),
+        theta_failure_beta=_maybe_broadcast(params.theta_failure_beta),
+        g_alpha=_maybe_broadcast(params.g_alpha),
+    )
+
+
+def _combine_mace_global(
+    base_params: MaceChannelParameters,
+    counts: MaceEvidenceCounts,
+    *,
+    prior_strength: float,
+    n_candidates: int,
+    annotator_indices: np.ndarray,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, MaceChannelParameters]:
+    if base_params.theta.ndim != 1:
+        raise ValueError("posterior='global_mace' requires global MACE base parameters.")
+    posterior_params_global = _mace_params_from_counts(
+        counts,
+        theta_success_prior=prior_strength * base_params.theta,
+        theta_failure_prior=prior_strength * (1.0 - base_params.theta),
+        g_prior=prior_strength * base_params.g,
+        eps=eps,
+    )
+    selected_params = _broadcast_global_mace_params(
+        posterior_params_global,
+        n_candidates=n_candidates,
+        annotator_indices=annotator_indices,
+    )
+    C = _mace_channel_from_theta_g(
+        selected_params.theta,
+        selected_params.g,
+        n_classes=n_classes,
+        eps=eps,
+    )
+    return C, selected_params
+
+
+def _combine_mace_local(
+    base_params: MaceChannelParameters,
+    counts: MaceEvidenceCounts,
+    *,
+    prior_strength: float,
+    n_candidates: int,
+    annotator_indices: np.ndarray,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, MaceChannelParameters]:
+    if base_params.theta.ndim == 1:
+        base_params = _broadcast_global_mace_params(
+            base_params,
+            n_candidates=n_candidates,
+            annotator_indices=annotator_indices,
+        )
+    elif base_params.theta.shape != counts.theta_success.shape:
+        raise ValueError(
+            "posterior='local_mace' requires local MACE base parameters with "
+            f"shape {counts.theta_success.shape}, got {base_params.theta.shape}."
+        )
+    posterior_params = _mace_params_from_counts(
+        counts,
+        theta_success_prior=prior_strength * base_params.theta,
+        theta_failure_prior=prior_strength * (1.0 - base_params.theta),
+        g_prior=prior_strength * base_params.g,
+        eps=eps,
+    )
+    C = _mace_channel_from_theta_g(
+        posterior_params.theta,
+        posterior_params.g,
+        n_classes=n_classes,
+        eps=eps,
+    )
+    return C, posterior_params
+
+
+def _broadcast_global_accuracy_params(
+    params: AccuracyUniformChannelParameters,
+    *,
+    n_candidates: int,
+    annotator_indices: np.ndarray,
+) -> AccuracyUniformChannelParameters:
+    annotator_indices = np.asarray(annotator_indices, dtype=int)
+    theta = np.broadcast_to(
+        params.theta[annotator_indices][None, :],
+        (n_candidates, len(annotator_indices)),
+    ).copy()
+
+    def _maybe_broadcast(arr):
+        if arr is None:
+            return None
+        return np.broadcast_to(
+            np.asarray(arr, dtype=float)[annotator_indices][None, :],
+            theta.shape,
+        ).copy()
+
+    return AccuracyUniformChannelParameters(
+        theta=theta,
+        alpha=_maybe_broadcast(params.alpha),
+        beta=_maybe_broadcast(params.beta),
+    )
+
+
+def _combine_accuracy_uniform_global(
+    base_params: AccuracyUniformChannelParameters,
+    counts: AccuracyEvidenceCounts,
+    *,
+    prior_strength: float,
+    n_candidates: int,
+    annotator_indices: np.ndarray,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, AccuracyUniformChannelParameters]:
+    if base_params.theta.ndim != 1:
+        raise ValueError(
+            "posterior='global_accuracy_uniform' requires global accuracy-uniform base parameters."
+        )
+    posterior_params_global = _accuracy_params_from_counts(
+        counts,
+        alpha_prior=prior_strength * base_params.theta,
+        beta_prior=prior_strength * (1.0 - base_params.theta),
+        eps=eps,
+    )
+    selected_params = _broadcast_global_accuracy_params(
+        posterior_params_global,
+        n_candidates=n_candidates,
+        annotator_indices=annotator_indices,
+    )
+    C = _accuracy_uniform_channel_from_theta(
+        selected_params.theta,
+        n_classes=n_classes,
+        eps=eps,
+    )
+    return C, selected_params
+
+
+def _combine_accuracy_uniform_local(
+    base_params: AccuracyUniformChannelParameters,
+    counts: AccuracyEvidenceCounts,
+    *,
+    prior_strength: float,
+    n_candidates: int,
+    annotator_indices: np.ndarray,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, AccuracyUniformChannelParameters]:
+    if base_params.theta.ndim == 1:
+        base_params = _broadcast_global_accuracy_params(
+            base_params,
+            n_candidates=n_candidates,
+            annotator_indices=annotator_indices,
+        )
+    elif base_params.theta.shape != counts.success.shape:
+        raise ValueError(
+            "posterior='local_accuracy_uniform' requires local accuracy-uniform "
+            f"base parameters with shape {counts.success.shape}, got {base_params.theta.shape}."
+        )
+    posterior_params = _accuracy_params_from_counts(
+        counts,
+        alpha_prior=prior_strength * base_params.theta,
+        beta_prior=prior_strength * (1.0 - base_params.theta),
+        eps=eps,
+    )
+    C = _accuracy_uniform_channel_from_theta(
+        posterior_params.theta,
+        n_classes=n_classes,
+        eps=eps,
+    )
+    return C, posterior_params
 
 
 def _compute_expected_accuracy(p: np.ndarray, C: np.ndarray) -> np.ndarray:
@@ -609,6 +1324,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.base_channel = str(
             base_channel if base_channel is not None else preset_cfg.get("base_channel")
         )
+        if self.base_channel == "mace":
+            self.base_channel = "global_mace"
         self.evidence = str(evidence if evidence is not None else preset_cfg.get("evidence"))
         self.posterior = str(posterior if posterior is not None else preset_cfg.get("posterior"))
         self.utility = str(utility)
@@ -688,29 +1405,55 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     def _apply_preset(preset: str | None) -> dict[str, str]:
         if preset is None:
             return {}
-        if preset == "local_mace":
-            raise ValueError("preset='local_mace' is planned but not implemented.")
         if preset not in _PRESETS:
             raise ValueError(f"Unknown preset={preset!r}. Expected one of {sorted(_PRESETS)}.")
         return dict(_PRESETS[preset])
 
     def _validate_combination(self):
-        if self.base_channel == "local_mace":
-            raise ValueError("base_channel='local_mace' is planned but not implemented.")
-        if self.base_channel not in {"uniform", "mace", "diag_uniform", "global_full"}:
+        if self.base_channel not in {
+            "uniform",
+            "global_mace",
+            "local_mace",
+            "global_accuracy_uniform",
+            "local_accuracy_uniform",
+            "diag_uniform",
+            "global_full",
+        }:
             raise ValueError(
                 "base_channel must be one of "
-                "{'uniform', 'mace', 'diag_uniform', 'global_full'}."
+                "{'uniform', 'global_mace', 'local_mace', "
+                "'global_accuracy_uniform', 'local_accuracy_uniform', "
+                "'diag_uniform', 'global_full'}."
             )
-        if self.evidence not in {"none", "global_soft_counts", "local_kernel_soft_counts"}:
+        if self.evidence not in {
+            "none",
+            "global_soft_counts",
+            "local_kernel_soft_counts",
+            "global_mace_counts",
+            "local_kernel_mace_counts",
+            "global_accuracy_counts",
+            "local_kernel_accuracy_counts",
+        }:
             raise ValueError(
                 "evidence must be one of "
-                "{'none', 'global_soft_counts', 'local_kernel_soft_counts'}."
+                "{'none', 'global_soft_counts', 'local_kernel_soft_counts', "
+                "'global_mace_counts', 'local_kernel_mace_counts', "
+                "'global_accuracy_counts', 'local_kernel_accuracy_counts'}."
             )
-        if self.posterior not in {"base_only", "dirichlet_global", "dirichlet_local"}:
+        if self.posterior not in {
+            "base_only",
+            "dirichlet_global",
+            "dirichlet_local",
+            "global_mace",
+            "local_mace",
+            "global_accuracy_uniform",
+            "local_accuracy_uniform",
+        }:
             raise ValueError(
                 "posterior must be one of "
-                "{'base_only', 'dirichlet_global', 'dirichlet_local'}."
+                "{'base_only', 'dirichlet_global', 'dirichlet_local', "
+                "'global_mace', 'local_mace', "
+                "'global_accuracy_uniform', 'local_accuracy_uniform'}."
             )
         if self.evidence == "none" and self.posterior != "base_only":
             raise ValueError("evidence='none' requires posterior='base_only'.")
@@ -724,6 +1467,59 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             raise ValueError(
                 "posterior='dirichlet_local' requires evidence='local_kernel_soft_counts'."
             )
+        if self.posterior == "global_mace" and self.evidence != "global_mace_counts":
+            raise ValueError(
+                "posterior='global_mace' requires evidence='global_mace_counts'."
+            )
+        if self.posterior == "local_mace" and self.evidence != "local_kernel_mace_counts":
+            raise ValueError(
+                "posterior='local_mace' requires evidence='local_kernel_mace_counts'."
+            )
+        if self.posterior == "global_accuracy_uniform" and self.evidence != "global_accuracy_counts":
+            raise ValueError(
+                "posterior='global_accuracy_uniform' requires evidence='global_accuracy_counts'."
+            )
+        if (
+            self.posterior == "local_accuracy_uniform"
+            and self.evidence != "local_kernel_accuracy_counts"
+        ):
+            raise ValueError(
+                "posterior='local_accuracy_uniform' requires "
+                "evidence='local_kernel_accuracy_counts'."
+            )
+        if self.posterior in {"global_mace", "local_mace"} and self.base_channel not in {
+            "global_mace",
+            "local_mace",
+        }:
+            raise ValueError(
+                "MACE posteriors require base_channel in {'global_mace', 'local_mace'}."
+            )
+        if self.posterior == "global_mace" and self.base_channel == "local_mace":
+            raise ValueError("posterior='global_mace' requires base_channel='global_mace'.")
+        if self.posterior in {
+            "global_accuracy_uniform",
+            "local_accuracy_uniform",
+        } and self.base_channel not in {
+            "global_accuracy_uniform",
+            "local_accuracy_uniform",
+        }:
+            raise ValueError(
+                "accuracy-uniform posteriors require base_channel in "
+                "{'global_accuracy_uniform', 'local_accuracy_uniform'}."
+            )
+        if (
+            self.posterior == "global_accuracy_uniform"
+            and self.base_channel == "local_accuracy_uniform"
+        ):
+            raise ValueError(
+                "posterior='global_accuracy_uniform' requires "
+                "base_channel='global_accuracy_uniform'."
+            )
+        if self.posterior == "dirichlet_global" and self.base_channel in {
+            "local_mace",
+            "local_accuracy_uniform",
+        }:
+            raise ValueError("posterior='dirichlet_global' requires a global base_channel.")
         if self.prior_strength <= 0:
             raise ValueError("prior_strength must be > 0.")
         if self.prior_observations not in {"same", "separate", "none", "initial"}:
@@ -763,7 +1559,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         if self.sample_class_prior and self.class_prior != "kernel":
             raise ValueError("sample_class_prior=True requires class_prior='kernel'.")
         if self.sample_channel and self.posterior == "base_only":
-            raise ValueError("sample_channel=True requires a Dirichlet posterior.")
+            raise ValueError("sample_channel=True requires a posterior distribution.")
         if self.utility_aggregation not in {"mean", "quantile"}:
             raise ValueError("utility_aggregation must be one of {'mean', 'quantile'}.")
         if self.utility_aggregation == "quantile":
@@ -777,9 +1573,17 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     def _clear_diagnostics(self):
         self.last_result_ = None
         self.last_base_channel_ = None
+        self.last_base_mace_theta_ = None
+        self.last_base_mace_g_ = None
+        self.last_base_accuracy_theta_ = None
         self.last_evidence_counts_ = None
+        self.last_evidence_mace_counts_ = None
+        self.last_evidence_accuracy_counts_ = None
         self.last_posterior_alpha_ = None
         self.last_posterior_channel_ = None
+        self.last_posterior_mace_theta_ = None
+        self.last_posterior_mace_g_ = None
+        self.last_posterior_accuracy_theta_ = None
         self.last_posterior_concentration_ = None
         self.last_class_prior_ = None
         self.last_class_prior_alpha_ = None
@@ -883,13 +1687,17 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             annotator_embeddings,
             n_annotators=y.shape[1],
         )
-        B = self._estimate_base_channel(
+        B, base_mace_params, base_accuracy_params = self._estimate_base_channel(
             P=P_all,
             y_idx=y_idx,
             prior_mask=prior_mask_resolved,
             weights=weights,
+            sample_embeddings=sample_embeddings,
+            sample_indices=sample_indices,
+            annotator_indices=annotator_indices,
             n_annotators=y.shape[1],
             n_classes=K,
+            annotator_similarity=annotator_similarity,
         )
         evidence_counts = self._compute_evidence_counts(
             P=P_all,
@@ -903,11 +1711,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             n_classes=K,
             annotator_similarity=annotator_similarity,
         )
-        C, alpha = self._combine_posterior(
+        C, alpha, posterior_mace_params, posterior_accuracy_params = self._combine_posterior(
             B=B,
+            base_mace_params=base_mace_params,
+            base_accuracy_params=base_accuracy_params,
             evidence_counts=evidence_counts,
             sample_indices=sample_indices,
             annotator_indices=annotator_indices,
+            n_classes=K,
         )
         p, class_alpha = self._resolve_candidate_class_prior(
             P=P_all,
@@ -923,6 +1734,16 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             evidence_counts=evidence_counts,
             posterior_alpha=alpha,
             posterior_channel=C,
+            base_mace_params=base_mace_params,
+            evidence_mace_counts=(
+                evidence_counts if isinstance(evidence_counts, MaceEvidenceCounts) else None
+            ),
+            posterior_mace_params=posterior_mace_params,
+            base_accuracy_params=base_accuracy_params,
+            evidence_accuracy_counts=(
+                evidence_counts if isinstance(evidence_counts, AccuracyEvidenceCounts) else None
+            ),
+            posterior_accuracy_params=posterior_accuracy_params,
             class_prior=p,
             class_prior_alpha=class_alpha,
             prior_mask=prior_mask_resolved,
@@ -941,7 +1762,13 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
 
     def _needs_sample_embeddings(self) -> bool:
         return (
-            self.evidence == "local_kernel_soft_counts"
+            self.base_channel == "local_mace"
+            or self.base_channel == "local_accuracy_uniform"
+            or self.evidence in {
+                "local_kernel_soft_counts",
+                "local_kernel_mace_counts",
+                "local_kernel_accuracy_counts",
+            }
             or self.class_prior == "kernel"
         )
 
@@ -1127,13 +1954,21 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         y_idx,
         prior_mask,
         weights,
+        sample_embeddings,
+        sample_indices,
+        annotator_indices,
         n_annotators,
         n_classes,
-    ) -> np.ndarray:
+        annotator_similarity,
+    ) -> tuple[
+        np.ndarray,
+        MaceChannelParameters | None,
+        AccuracyUniformChannelParameters | None,
+    ]:
         if self.base_channel == "uniform":
-            return _estimate_base_uniform(n_annotators, n_classes)
-        if self.base_channel == "mace":
-            return _estimate_base_mace(
+            return _estimate_base_uniform(n_annotators, n_classes), None, None
+        if self.base_channel == "global_mace":
+            params = _estimate_global_mace_parameters(
                 P,
                 y_idx,
                 prior_mask,
@@ -1142,7 +1977,97 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 n_classes=n_classes,
                 theta_prior=self.mace_theta_prior,
                 bias_prior=self.mace_bias_prior,
+                annotator_similarity=annotator_similarity,
                 eps=self.eps,
+            )
+            return (
+                _mace_channel_from_theta_g(
+                    params.theta,
+                    params.g,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                params,
+                None,
+            )
+        if self.base_channel == "local_mace":
+            if sample_embeddings is None:
+                raise ValueError("base_channel='local_mace' requires sample embeddings.")
+            params = _estimate_local_mace_parameters(
+                P,
+                y_idx,
+                prior_mask,
+                weights,
+                sample_embeddings=sample_embeddings,
+                candidate_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                theta_prior=self.mace_theta_prior,
+                bias_prior=self.mace_bias_prior,
+                kernel=self.kernel,
+                gamma=self.gamma,
+                normalize_embeddings=self.normalize_embeddings,
+                annotator_similarity=annotator_similarity,
+                eps=self.eps,
+            )
+            return (
+                _mace_channel_from_theta_g(
+                    params.theta,
+                    params.g,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                params,
+                None,
+            )
+        if self.base_channel == "global_accuracy_uniform":
+            params = _estimate_global_accuracy_uniform_parameters(
+                P,
+                y_idx,
+                prior_mask,
+                weights,
+                n_annotators=n_annotators,
+                theta_prior=self.mace_theta_prior,
+                annotator_similarity=annotator_similarity,
+                eps=self.eps,
+            )
+            return (
+                _accuracy_uniform_channel_from_theta(
+                    params.theta,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                None,
+                params,
+            )
+        if self.base_channel == "local_accuracy_uniform":
+            if sample_embeddings is None:
+                raise ValueError("base_channel='local_accuracy_uniform' requires sample embeddings.")
+            params = _estimate_local_accuracy_uniform_parameters(
+                P,
+                y_idx,
+                prior_mask,
+                weights,
+                sample_embeddings=sample_embeddings,
+                candidate_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                n_annotators=n_annotators,
+                theta_prior=self.mace_theta_prior,
+                kernel=self.kernel,
+                gamma=self.gamma,
+                normalize_embeddings=self.normalize_embeddings,
+                annotator_similarity=annotator_similarity,
+                eps=self.eps,
+            )
+            return (
+                _accuracy_uniform_channel_from_theta(
+                    params.theta,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                None,
+                params,
             )
         if self.base_channel == "diag_uniform":
             return _estimate_base_diag_uniform(
@@ -1154,7 +2079,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 n_classes=n_classes,
                 theta_prior=self.diag_theta_prior,
                 eps=self.eps,
-            )
+            ), None, None
         if self.base_channel == "global_full":
             return _estimate_base_global_full(
                 P,
@@ -1165,7 +2090,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 n_classes=n_classes,
                 alpha0=self.global_full_alpha0,
                 eps=self.eps,
-            )
+            ), None, None
         raise RuntimeError("unreachable base_channel")
 
     def _compute_evidence_counts(
@@ -1213,24 +2138,104 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
+        if self.evidence == "global_mace_counts":
+            return _compute_global_mace_counts(
+                P,
+                y_idx,
+                evidence_mask,
+                weights,
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                annotator_similarity=annotator_similarity,
+            )
+        if self.evidence == "local_kernel_mace_counts":
+            if sample_embeddings is None:
+                raise ValueError("local_kernel_mace_counts requires sample embeddings.")
+            return _compute_local_kernel_mace_counts(
+                P,
+                y_idx,
+                evidence_mask,
+                weights,
+                sample_embeddings=sample_embeddings,
+                candidate_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                kernel=self.kernel,
+                gamma=self.gamma,
+                normalize_embeddings=self.normalize_embeddings,
+                annotator_similarity=annotator_similarity,
+                eps=self.eps,
+            )
+        if self.evidence == "global_accuracy_counts":
+            return _compute_global_accuracy_counts(
+                P,
+                y_idx,
+                evidence_mask,
+                weights,
+                n_annotators=n_annotators,
+                annotator_similarity=annotator_similarity,
+            )
+        if self.evidence == "local_kernel_accuracy_counts":
+            if sample_embeddings is None:
+                raise ValueError("local_kernel_accuracy_counts requires sample embeddings.")
+            return _compute_local_kernel_accuracy_counts(
+                P,
+                y_idx,
+                evidence_mask,
+                weights,
+                sample_embeddings=sample_embeddings,
+                candidate_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                n_annotators=n_annotators,
+                kernel=self.kernel,
+                gamma=self.gamma,
+                normalize_embeddings=self.normalize_embeddings,
+                annotator_similarity=annotator_similarity,
+                eps=self.eps,
+            )
         raise RuntimeError("unreachable evidence")
 
     def _combine_posterior(
         self,
         *,
         B,
+        base_mace_params,
+        base_accuracy_params,
         evidence_counts,
         sample_indices,
         annotator_indices,
+        n_classes,
     ):
         if self.posterior == "base_only":
-            return _combine_base_only(
+            C, alpha = _combine_base_only(
                 B,
                 n_candidates=len(sample_indices),
                 annotator_indices=annotator_indices,
             )
+            if base_mace_params is None:
+                mace_params = None
+            elif base_mace_params.theta.ndim == 1:
+                mace_params = _broadcast_global_mace_params(
+                    base_mace_params,
+                    n_candidates=len(sample_indices),
+                    annotator_indices=annotator_indices,
+                )
+            else:
+                mace_params = base_mace_params
+            if base_accuracy_params is None:
+                accuracy_params = None
+            elif base_accuracy_params.theta.ndim == 1:
+                accuracy_params = _broadcast_global_accuracy_params(
+                    base_accuracy_params,
+                    n_candidates=len(sample_indices),
+                    annotator_indices=annotator_indices,
+                )
+            else:
+                accuracy_params = base_accuracy_params
+            return C, alpha, mace_params, accuracy_params
         if self.posterior == "dirichlet_global":
-            return _combine_dirichlet_global(
+            C, alpha = _combine_dirichlet_global(
                 B,
                 evidence_counts,
                 prior_strength=self.prior_strength,
@@ -1238,14 +2243,72 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 annotator_indices=annotator_indices,
                 eps=self.eps,
             )
+            return C, alpha, None, None
         if self.posterior == "dirichlet_local":
-            return _combine_dirichlet_local(
+            C, alpha = _combine_dirichlet_local(
                 B,
                 evidence_counts,
                 prior_strength=self.prior_strength,
                 annotator_indices=annotator_indices,
                 eps=self.eps,
             )
+            return C, alpha, None, None
+        if self.posterior == "global_mace":
+            if base_mace_params is None:
+                raise ValueError("posterior='global_mace' requires a MACE base channel.")
+            C, mace_params = _combine_mace_global(
+                base_mace_params,
+                evidence_counts,
+                prior_strength=self.prior_strength,
+                n_candidates=len(sample_indices),
+                annotator_indices=annotator_indices,
+                n_classes=n_classes,
+                eps=self.eps,
+            )
+            return C, None, mace_params, None
+        if self.posterior == "local_mace":
+            if base_mace_params is None:
+                raise ValueError("posterior='local_mace' requires a MACE base channel.")
+            C, mace_params = _combine_mace_local(
+                base_mace_params,
+                evidence_counts,
+                prior_strength=self.prior_strength,
+                n_candidates=len(sample_indices),
+                annotator_indices=annotator_indices,
+                n_classes=n_classes,
+                eps=self.eps,
+            )
+            return C, None, mace_params, None
+        if self.posterior == "global_accuracy_uniform":
+            if base_accuracy_params is None:
+                raise ValueError(
+                    "posterior='global_accuracy_uniform' requires an accuracy-uniform base channel."
+                )
+            C, accuracy_params = _combine_accuracy_uniform_global(
+                base_accuracy_params,
+                evidence_counts,
+                prior_strength=self.prior_strength,
+                n_candidates=len(sample_indices),
+                annotator_indices=annotator_indices,
+                n_classes=n_classes,
+                eps=self.eps,
+            )
+            return C, None, None, accuracy_params
+        if self.posterior == "local_accuracy_uniform":
+            if base_accuracy_params is None:
+                raise ValueError(
+                    "posterior='local_accuracy_uniform' requires an accuracy-uniform base channel."
+                )
+            C, accuracy_params = _combine_accuracy_uniform_local(
+                base_accuracy_params,
+                evidence_counts,
+                prior_strength=self.prior_strength,
+                n_candidates=len(sample_indices),
+                annotator_indices=annotator_indices,
+                n_classes=n_classes,
+                eps=self.eps,
+            )
+            return C, None, None, accuracy_params
         raise RuntimeError("unreachable posterior")
 
     def _resolve_candidate_class_prior(
@@ -1318,7 +2381,19 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             if self.sample_class_prior:
                 p = self._sample_dirichlet_rows(result.class_prior_alpha, rng)
             if self.sample_channel:
-                C = self._sample_dirichlet_rows(result.posterior_alpha, rng)
+                if result.posterior_mace_params is not None:
+                    C = self._sample_mace_channel(
+                        result.posterior_mace_params,
+                        rng,
+                    )
+                elif result.posterior_accuracy_params is not None:
+                    C = self._sample_accuracy_uniform_channel(
+                        result.posterior_accuracy_params,
+                        rng,
+                        n_classes=C.shape[-1],
+                    )
+                else:
+                    C = self._sample_dirichlet_rows(result.posterior_alpha, rng)
             draws[t] = self._compute_utility(p, C)
         self.last_utility_mean_ = np.mean(draws, axis=0)
         self.last_utility_std_ = np.std(draws, axis=0)
@@ -1345,6 +2420,48 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         samples = rng.gamma(shape=alpha, scale=1.0)
         return _normalize_axis(samples, axis=-1, eps=self.eps)
 
+    def _sample_mace_channel(
+        self,
+        params: MaceChannelParameters,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        if (
+            params.theta_success_alpha is None
+            or params.theta_failure_beta is None
+            or params.g_alpha is None
+        ):
+            raise ValueError("Cannot sample MACE channel without posterior MACE parameters.")
+        a = np.clip(params.theta_success_alpha, self.eps, None)
+        b = np.clip(params.theta_failure_beta, self.eps, None)
+        theta = rng.beta(a, b)
+        g = self._sample_dirichlet_rows(params.g_alpha, rng)
+        return _mace_channel_from_theta_g(
+            theta,
+            g,
+            n_classes=g.shape[-1],
+            eps=self.eps,
+        )
+
+    def _sample_accuracy_uniform_channel(
+        self,
+        params: AccuracyUniformChannelParameters,
+        rng: np.random.Generator,
+        *,
+        n_classes: int,
+    ) -> np.ndarray:
+        if params.alpha is None or params.beta is None:
+            raise ValueError(
+                "Cannot sample accuracy-uniform channel without posterior Beta parameters."
+            )
+        alpha = np.clip(params.alpha, self.eps, None)
+        beta = np.clip(params.beta, self.eps, None)
+        theta = rng.beta(alpha, beta)
+        return _accuracy_uniform_channel_from_theta(
+            theta,
+            n_classes=n_classes,
+            eps=self.eps,
+        )
+
     def _store_result_diagnostics(
         self,
         result: ChannelEstimationResult,
@@ -1352,9 +2469,37 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     ):
         self.last_result_ = result
         self.last_base_channel_ = result.base_channel
+        self.last_base_mace_theta_ = (
+            None if result.base_mace_params is None else result.base_mace_params.theta
+        )
+        self.last_base_mace_g_ = (
+            None if result.base_mace_params is None else result.base_mace_params.g
+        )
+        self.last_base_accuracy_theta_ = (
+            None
+            if result.base_accuracy_params is None
+            else result.base_accuracy_params.theta
+        )
         self.last_evidence_counts_ = result.evidence_counts
+        self.last_evidence_mace_counts_ = result.evidence_mace_counts
+        self.last_evidence_accuracy_counts_ = result.evidence_accuracy_counts
         self.last_posterior_alpha_ = result.posterior_alpha
         self.last_posterior_channel_ = result.posterior_channel
+        self.last_posterior_mace_theta_ = (
+            None
+            if result.posterior_mace_params is None
+            else result.posterior_mace_params.theta
+        )
+        self.last_posterior_mace_g_ = (
+            None
+            if result.posterior_mace_params is None
+            else result.posterior_mace_params.g
+        )
+        self.last_posterior_accuracy_theta_ = (
+            None
+            if result.posterior_accuracy_params is None
+            else result.posterior_accuracy_params.theta
+        )
         self.last_posterior_concentration_ = (
             None
             if result.posterior_alpha is None
