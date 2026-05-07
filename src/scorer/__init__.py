@@ -9,6 +9,7 @@ from ._diversity import (
 from ._random import RandomPairScorer
 from ._bam import BetaModelPairScorer
 from ._ks_bag import KernelSmoothedBayesianAnnotatorGain
+from ._ks_bag_new import KernelSmoothedBayesianAnnotatorGainNew
 from ._local_response_bias_mixture import LocalResponseBiasMixtureGain
 from ._likelihood_local_response_bias_mixture import (
     LikelihoodLocalResponseBiasMixtureGain,
@@ -25,6 +26,7 @@ __all__ = [
     "RandomPairScorer",
     "BetaModelPairScorer",
     "KernelSmoothedBayesianAnnotatorGain",
+    "KernelSmoothedBayesianAnnotatorGainNew",
     "LocalResponseBiasMixtureGain",
     "LikelihoodLocalResponseBiasMixtureGain",
 ]

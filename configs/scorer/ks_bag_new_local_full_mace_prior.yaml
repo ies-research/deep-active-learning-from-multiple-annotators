@@ -1,0 +1,21 @@
+_target_: src.scorer.KernelSmoothedBayesianAnnotatorGainNew
+
+preset: local_full_mace_prior
+utility: bias_corrected_accuracy
+class_prior: classifier
+evidence_weight: none
+kernel: rbf
+gamma: median
+embedding_source: classifier
+normalize_embeddings: true
+use_annotator_embeddings: false
+annotator_kernel: rbf
+annotator_gamma: median
+prior_strength: 1.0
+prior_observations: same
+n_mc_samples: 1
+sample_class_prior: false
+sample_channel: false
+utility_aggregation: mean
+utility_quantile: null
+random_state: ${seed}
