@@ -91,6 +91,8 @@ class ChannelEstimationResult:
     base_accuracy_params: "AccuracyUniformChannelParameters | None"
     evidence_accuracy_counts: "AccuracyEvidenceCounts | None"
     posterior_accuracy_params: "AccuracyUniformChannelParameters | None"
+    classifier_proba: np.ndarray
+    observed_class_proba: np.ndarray
     class_prior: np.ndarray
     class_prior_alpha: np.ndarray | None
     prior_mask: np.ndarray
@@ -155,22 +157,36 @@ def _resolve_gamma_from_embeddings(
     X: np.ndarray,
     gamma,
     *,
+    bandwidth_knn_k: int = 10,
     eps: float = 1e-12,
 ) -> float:
-    if gamma is None or str(gamma).lower() == "median":
+    gamma_name = None if gamma is None else str(gamma).lower()
+    if gamma is None or gamma_name in {"median", "minimum", "knn"}:
         X = np.asarray(X, dtype=float)
         if X.shape[0] < 2:
             return 1.0
         diff = X[:, None, :] - X[None, :, :]
         d2 = np.sum(diff * diff, axis=2)
-        d2 = d2[np.triu_indices(X.shape[0], k=1)]
-        d2 = d2[d2 > eps]
-        if d2.size == 0:
-            return 1.0
-        return float(1.0 / np.median(d2))
+        if gamma_name == "knn":
+            k = min(max(int(bandwidth_knn_k), 1), X.shape[0] - 1)
+            d2_knn = d2.copy()
+            np.fill_diagonal(d2_knn, np.inf)
+            kth = np.partition(d2_knn, kth=k - 1, axis=1)[:, k - 1]
+            positive = kth[np.isfinite(kth) & (kth > eps)]
+            if positive.size == 0:
+                return 1.0
+            scale = np.median(positive)
+        else:
+            pairwise = d2[np.triu_indices(X.shape[0], k=1)]
+            pairwise = pairwise[pairwise > eps]
+            if pairwise.size == 0:
+                return 1.0
+            scale = np.min(pairwise) if gamma_name == "minimum" else np.median(pairwise)
+        print(scale)
+        return float(1.0 / (2*max(scale, eps)))
     gamma = float(gamma)
     if gamma <= 0:
-        raise ValueError("gamma must be positive, None, or 'median'.")
+        raise ValueError("gamma must be positive, None, 'median', 'minimum', or 'knn'.")
     return gamma
 
 
@@ -181,6 +197,8 @@ def _pairwise_kernel(
     kernel: str,
     gamma=None,
     normalize_embeddings: bool = True,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
     eps: float = 1e-12,
 ) -> np.ndarray:
     X = np.asarray(X, dtype=float)
@@ -197,13 +215,25 @@ def _pairwise_kernel(
         K = 0.5 * (1.0 + Xn @ Yn.T)
         return np.clip(K, 0.0, 1.0)
     if kernel == "rbf":
-        gamma_value = _resolve_gamma_from_embeddings(
-            X if X.shape[0] >= 2 else Y,
-            gamma,
-            eps=eps,
-        )
         Xr = _l2_normalize(X, eps=eps) if normalize_embeddings else X
         Yr = _l2_normalize(Y, eps=eps) if normalize_embeddings else Y
+        gamma_ref = X if X.shape[0] >= 2 else Y
+        if gamma_reference_embeddings is not None:
+            gamma_ref = np.asarray(gamma_reference_embeddings, dtype=float)
+            if gamma_ref.ndim != 2:
+                raise ValueError("gamma_reference_embeddings must be a 2D array.")
+            if gamma_ref.shape[1] != X.shape[1]:
+                raise ValueError(
+                    "gamma_reference_embeddings must have the same feature dimension "
+                    "as the kernel inputs."
+                )
+        gamma_ref = _l2_normalize(gamma_ref, eps=eps) if normalize_embeddings else gamma_ref
+        gamma_value = _resolve_gamma_from_embeddings(
+            gamma_ref,
+            gamma,
+            bandwidth_knn_k=bandwidth_knn_k,
+            eps=eps,
+        )
         x2 = np.sum(Xr * Xr, axis=1)[:, None]
         y2 = np.sum(Yr * Yr, axis=1)[None, :]
         d2 = np.maximum(x2 + y2 - 2.0 * (Xr @ Yr.T), 0.0)
@@ -392,6 +422,8 @@ def _compute_local_kernel_soft_counts(
     kernel: str,
     gamma,
     normalize_embeddings: bool,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> np.ndarray:
@@ -411,6 +443,8 @@ def _compute_local_kernel_soft_counts(
         kernel=kernel,
         gamma=gamma,
         normalize_embeddings=normalize_embeddings,
+        gamma_reference_embeddings=gamma_reference_embeddings,
+        bandwidth_knn_k=bandwidth_knn_k,
         eps=eps,
     )
     if annotator_similarity is not None:
@@ -443,6 +477,15 @@ def _mace_bias_prior_vector(bias_prior, n_classes: int) -> np.ndarray:
     if beta.shape != (n_classes,) or np.any(beta <= 0):
         raise ValueError("mace_bias_prior must be a positive scalar or length-K vector.")
     return beta
+
+
+def _class_prior_alpha0_vector(alpha0, n_classes: int) -> np.ndarray:
+    alpha0 = np.asarray(alpha0, dtype=float)
+    if alpha0.ndim == 0:
+        alpha0 = np.full(n_classes, float(alpha0), dtype=float)
+    if alpha0.shape != (n_classes,) or np.any(alpha0 <= 0):
+        raise ValueError("class_prior_alpha0 must be a positive scalar or length-K vector.")
+    return alpha0
 
 
 def _mace_channel_from_theta_g(
@@ -525,6 +568,8 @@ def _compute_local_kernel_accuracy_counts(
     kernel: str,
     gamma,
     normalize_embeddings: bool,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> AccuracyEvidenceCounts:
@@ -544,6 +589,8 @@ def _compute_local_kernel_accuracy_counts(
         kernel=kernel,
         gamma=gamma,
         normalize_embeddings=normalize_embeddings,
+        gamma_reference_embeddings=gamma_reference_embeddings,
+        bandwidth_knn_k=bandwidth_knn_k,
         eps=eps,
     )
     if annotator_similarity is not None:
@@ -624,6 +671,8 @@ def _estimate_local_accuracy_uniform_parameters(
     kernel: str,
     gamma,
     normalize_embeddings: bool,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> AccuracyUniformChannelParameters:
@@ -642,6 +691,8 @@ def _estimate_local_accuracy_uniform_parameters(
         kernel=kernel,
         gamma=gamma,
         normalize_embeddings=normalize_embeddings,
+        gamma_reference_embeddings=gamma_reference_embeddings,
+        bandwidth_knn_k=bandwidth_knn_k,
         annotator_similarity=annotator_similarity,
         eps=eps,
     )
@@ -711,6 +762,8 @@ def _compute_local_kernel_mace_counts(
     kernel: str,
     gamma,
     normalize_embeddings: bool,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> MaceEvidenceCounts:
@@ -731,6 +784,8 @@ def _compute_local_kernel_mace_counts(
         kernel=kernel,
         gamma=gamma,
         normalize_embeddings=normalize_embeddings,
+        gamma_reference_embeddings=gamma_reference_embeddings,
+        bandwidth_knn_k=bandwidth_knn_k,
         eps=eps,
     )
     if annotator_similarity is not None:
@@ -835,6 +890,8 @@ def _estimate_local_mace_parameters(
     kernel: str,
     gamma,
     normalize_embeddings: bool,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> MaceChannelParameters:
@@ -855,6 +912,8 @@ def _estimate_local_mace_parameters(
         kernel=kernel,
         gamma=gamma,
         normalize_embeddings=normalize_embeddings,
+        gamma_reference_embeddings=gamma_reference_embeddings,
+        bandwidth_knn_k=bandwidth_knn_k,
         annotator_similarity=annotator_similarity,
         eps=eps,
     )
@@ -1283,7 +1342,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         evidence: str | None = None,
         posterior: str | None = None,
         utility: str = "information_gain",
-        class_prior: str = "classifier",
+        class_prior: str = "kernel",
         top_m: int | None = None,
         prior_strength: float = 1.0,
         prior_observations: str = "same",
@@ -1295,7 +1354,10 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         initial_observation_mask=None,
         evidence_weight: str = "none",
         kernel: str = "rbf",
-        gamma=None,
+        gamma="median",
+        bandwidth_reference: str | int | float = "labeled",
+        bandwidth_reference_sample: int | float | None = None,
+        bandwidth_knn_k: int = 10,
         embedding_source: str = "classifier",
         normalize_embeddings: bool = True,
         use_annotator_embeddings: bool = False,
@@ -1305,10 +1367,16 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         mace_bias_prior=1.0,
         diag_theta_prior=(1.0, 1.0),
         global_full_alpha0=1.0,
-        class_prior_strength: float = 1.0,
-        class_prior_kernel: str | None = None,
-        class_prior_gamma=None,
-        class_prior_support: str = "evidence",
+        class_prior_alpha0=1.0,
+        class_prior_kernel: str | None = "rbf",
+        class_prior_gamma="minimum",
+        class_prior_support: str = "observed",
+        class_prior_evidence_weight: str = "none",
+        observed_class_prior: str = "kernel",
+        observed_class_prior_kernel: str | None = None,
+        observed_class_prior_gamma=None,
+        observed_class_prior_support: str = "observed",
+        observed_class_prior_leave_one_out: bool = False,
         n_mc_samples: int = 0,
         sample_class_prior: bool = False,
         sample_channel: bool = False,
@@ -1339,9 +1407,19 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.prior_mask = prior_mask
         self.evidence_mask = evidence_mask
         self.initial_observation_mask = initial_observation_mask
+        if (
+            bandwidth_reference_sample is None
+            and isinstance(bandwidth_reference, (int, float))
+            and not isinstance(bandwidth_reference, bool)
+        ):
+            bandwidth_reference_sample = bandwidth_reference
+            bandwidth_reference = "all"
         self.evidence_weight = str(evidence_weight)
         self.kernel = str(kernel)
         self.gamma = gamma
+        self.bandwidth_reference = str(bandwidth_reference)
+        self.bandwidth_reference_sample = bandwidth_reference_sample
+        self.bandwidth_knn_k = int(bandwidth_knn_k)
         self.embedding_source = str(embedding_source)
         self.normalize_embeddings = bool(normalize_embeddings)
         self.use_annotator_embeddings = bool(use_annotator_embeddings)
@@ -1351,10 +1429,16 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.mace_bias_prior = mace_bias_prior
         self.diag_theta_prior = tuple(diag_theta_prior)
         self.global_full_alpha0 = global_full_alpha0
-        self.class_prior_strength = float(class_prior_strength)
+        self.class_prior_alpha0 = class_prior_alpha0
         self.class_prior_kernel = class_prior_kernel
         self.class_prior_gamma = class_prior_gamma
         self.class_prior_support = str(class_prior_support)
+        self.class_prior_evidence_weight = str(class_prior_evidence_weight)
+        self.observed_class_prior = str(observed_class_prior)
+        self.observed_class_prior_kernel = observed_class_prior_kernel
+        self.observed_class_prior_gamma = observed_class_prior_gamma
+        self.observed_class_prior_support = str(observed_class_prior_support)
+        self.observed_class_prior_leave_one_out = bool(observed_class_prior_leave_one_out)
         self.n_mc_samples = int(n_mc_samples)
         self.sample_class_prior = bool(sample_class_prior)
         self.sample_channel = bool(sample_channel)
@@ -1537,27 +1621,87 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 "utility must be one of "
                 "{'expected_accuracy', 'bias_corrected_accuracy', 'information_gain'}."
             )
-        if self.class_prior not in {"classifier", "uniform", "top_m", "kernel"}:
+        if self.class_prior not in {
+            "classifier",
+            "uniform",
+            "top_m",
+            "kernel",
+            "evidence_shrunk",
+        }:
             raise ValueError(
-                "class_prior must be one of {'classifier', 'uniform', 'top_m', 'kernel'}."
+                "class_prior must be one of "
+                "{'classifier', 'uniform', 'top_m', 'kernel', 'evidence_shrunk'}."
             )
         if self.class_prior == "top_m":
             if self.top_m is None:
                 raise ValueError("class_prior='top_m' requires top_m.")
         elif self.top_m is not None:
             raise ValueError("top_m is only used when class_prior='top_m'.")
-        if self.class_prior_strength <= 0:
-            raise ValueError("class_prior_strength must be > 0.")
+        if np.any(np.asarray(self.class_prior_alpha0, dtype=float) <= 0):
+            raise ValueError("class_prior_alpha0 must be > 0.")
         if self.class_prior_support not in {"evidence", "observed"}:
             raise ValueError("class_prior_support must be one of {'evidence', 'observed'}.")
+        if self.class_prior in {"kernel", "evidence_shrunk"} and self.class_prior_gamma is None:
+            raise ValueError(
+                f"class_prior={self.class_prior!r} requires explicit class_prior_gamma."
+            )
+        _compute_evidence_weights(
+            np.full((2, 2), 0.5, dtype=float),
+            self.class_prior_evidence_weight,
+            eps=self.eps,
+        )
+        if self.observed_class_prior not in {"classifier", "kernel", "evidence_shrunk"}:
+            raise ValueError(
+                "observed_class_prior must be one of "
+                "{'classifier', 'kernel', 'evidence_shrunk'}."
+            )
+        if self.observed_class_prior_support not in {"observed", "prior", "evidence"}:
+            raise ValueError(
+                "observed_class_prior_support must be one of {'observed', 'prior', 'evidence'}."
+            )
+        if (
+            self.observed_class_prior in {"kernel", "evidence_shrunk"}
+            and self.observed_class_prior_gamma is None
+            and self.class_prior_gamma is None
+        ):
+            raise ValueError(
+                f"observed_class_prior={self.observed_class_prior!r} requires "
+                "observed_class_prior_gamma or class_prior_gamma."
+            )
+        if (
+            self.observed_class_prior_leave_one_out
+            and self.observed_class_prior not in {"kernel", "evidence_shrunk"}
+        ):
+            raise ValueError(
+                "observed_class_prior_leave_one_out=True requires observed_class_prior "
+                "in {'kernel', 'evidence_shrunk'}."
+            )
+        if self.bandwidth_reference not in {"labeled", "all"}:
+            raise ValueError("bandwidth_reference must be one of {'labeled', 'all'}.")
+        if self.bandwidth_reference_sample is not None:
+            sample = self.bandwidth_reference_sample
+            if isinstance(sample, bool):
+                raise ValueError("bandwidth_reference_sample must be a positive int or a float in (0, 1].")
+            if isinstance(sample, (int, np.integer)):
+                if int(sample) <= 0:
+                    raise ValueError("bandwidth_reference_sample integer must be > 0.")
+            else:
+                sample = float(sample)
+                if not (0.0 < sample <= 1.0):
+                    raise ValueError("bandwidth_reference_sample float must be in (0, 1].")
+        if self.bandwidth_knn_k <= 0:
+            raise ValueError("bandwidth_knn_k must be > 0.")
         if self.embedding_source not in {"classifier", "input"}:
             raise ValueError("embedding_source must be one of {'classifier', 'input'}.")
         if self.n_mc_samples < 0:
             raise ValueError("n_mc_samples must be >= 0.")
         if (self.sample_class_prior or self.sample_channel) and self.n_mc_samples <= 0:
             raise ValueError("Sampling requires n_mc_samples > 0.")
-        if self.sample_class_prior and self.class_prior != "kernel":
-            raise ValueError("sample_class_prior=True requires class_prior='kernel'.")
+        if self.sample_class_prior and self.class_prior not in {"kernel", "evidence_shrunk"}:
+            raise ValueError(
+                "sample_class_prior=True requires class_prior in "
+                "{'kernel', 'evidence_shrunk'}."
+            )
         if self.sample_channel and self.posterior == "base_only":
             raise ValueError("sample_channel=True requires a posterior distribution.")
         if self.utility_aggregation not in {"mean", "quantile"}:
@@ -1585,6 +1729,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.last_posterior_mace_g_ = None
         self.last_posterior_accuracy_theta_ = None
         self.last_posterior_concentration_ = None
+        self.last_classifier_proba_ = None
+        self.last_observed_class_proba_ = None
+        self.last_candidate_class_prior_ = None
         self.last_class_prior_ = None
         self.last_class_prior_alpha_ = None
         self.last_prior_mask_ = None
@@ -1682,17 +1829,32 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             evidence_mask=evidence_mask,
             initial_observation_mask=initial_observation_mask,
         )
-        weights = _compute_evidence_weights(P_all, self.evidence_weight, eps=self.eps)
+        observed_mask = _make_observation_mask(y, missing_label=missing_label)
+        gamma_reference_embeddings = self._resolve_bandwidth_reference_embeddings(
+            sample_embeddings=sample_embeddings,
+            observed_mask=observed_mask,
+        )
+        P_channel = self._resolve_observed_class_probabilities(
+            P=P_all,
+            sample_embeddings=sample_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
+            prior_mask=prior_mask_resolved,
+            evidence_mask=evidence_mask_resolved,
+            observed_mask=observed_mask,
+            n_classes=K,
+        )
+        weights = _compute_evidence_weights(P_channel, self.evidence_weight, eps=self.eps)
         annotator_similarity = self._resolve_annotator_similarity(
             annotator_embeddings,
             n_annotators=y.shape[1],
         )
         B, base_mace_params, base_accuracy_params = self._estimate_base_channel(
-            P=P_all,
+            P=P_channel,
             y_idx=y_idx,
             prior_mask=prior_mask_resolved,
             weights=weights,
             sample_embeddings=sample_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
             sample_indices=sample_indices,
             annotator_indices=annotator_indices,
             n_annotators=y.shape[1],
@@ -1700,11 +1862,12 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             annotator_similarity=annotator_similarity,
         )
         evidence_counts = self._compute_evidence_counts(
-            P=P_all,
+            P=P_channel,
             y_idx=y_idx,
             evidence_mask=evidence_mask_resolved,
             weights=weights,
             sample_embeddings=sample_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
             sample_indices=sample_indices,
             annotator_indices=annotator_indices,
             n_annotators=y.shape[1],
@@ -1723,9 +1886,10 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         p, class_alpha = self._resolve_candidate_class_prior(
             P=P_all,
             sample_embeddings=sample_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
             sample_indices=sample_indices,
             evidence_mask=evidence_mask_resolved,
-            observed_mask=_make_observation_mask(y, missing_label=missing_label),
+            observed_mask=observed_mask,
             n_classes=K,
         )
         uses_same = np.array_equal(prior_mask_resolved, evidence_mask_resolved)
@@ -1744,6 +1908,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 evidence_counts if isinstance(evidence_counts, AccuracyEvidenceCounts) else None
             ),
             posterior_accuracy_params=posterior_accuracy_params,
+            classifier_proba=P_all,
+            observed_class_proba=P_channel,
             class_prior=p,
             class_prior_alpha=class_alpha,
             prior_mask=prior_mask_resolved,
@@ -1769,8 +1935,42 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 "local_kernel_mace_counts",
                 "local_kernel_accuracy_counts",
             }
-            or self.class_prior == "kernel"
+            or self.class_prior in {"kernel", "evidence_shrunk"}
+            or self.observed_class_prior in {"kernel", "evidence_shrunk"}
         )
+
+    def _resolve_bandwidth_reference_embeddings(
+        self,
+        *,
+        sample_embeddings: np.ndarray | None,
+        observed_mask: np.ndarray,
+    ) -> np.ndarray | None:
+        if sample_embeddings is None:
+            return None
+        if self.bandwidth_reference == "all":
+            return self._subsample_bandwidth_reference(sample_embeddings)
+        if self.bandwidth_reference == "labeled":
+            labeled = np.asarray(observed_mask, dtype=bool).any(axis=1)
+            if np.any(labeled):
+                return self._subsample_bandwidth_reference(sample_embeddings[labeled])
+            return self._subsample_bandwidth_reference(sample_embeddings)
+        raise RuntimeError("unreachable bandwidth_reference")
+
+    def _subsample_bandwidth_reference(self, embeddings: np.ndarray) -> np.ndarray:
+        embeddings = np.asarray(embeddings, dtype=float)
+        sample = self.bandwidth_reference_sample
+        if sample is None or embeddings.shape[0] <= 1:
+            return embeddings
+        n = embeddings.shape[0]
+        if isinstance(sample, (int, np.integer)) and not isinstance(sample, bool):
+            size = min(int(sample), n)
+        else:
+            size = int(np.ceil(float(sample) * n))
+            size = min(max(size, 1), n)
+        if size >= n:
+            return embeddings
+        choice = self.random_state.choice(n, size=size, replace=False)
+        return embeddings[np.sort(choice)]
 
     def _predict_probabilities_and_embeddings(
         self,
@@ -1944,6 +2144,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             kernel=self.annotator_kernel,
             gamma=self.annotator_gamma,
             normalize_embeddings=self.normalize_embeddings,
+            bandwidth_knn_k=self.bandwidth_knn_k,
             eps=self.eps,
         )
 
@@ -1955,6 +2156,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         prior_mask,
         weights,
         sample_embeddings,
+        gamma_reference_embeddings,
         sample_indices,
         annotator_indices,
         n_annotators,
@@ -2008,6 +2210,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2057,6 +2261,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2101,6 +2307,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         evidence_mask,
         weights,
         sample_embeddings,
+        gamma_reference_embeddings,
         sample_indices,
         annotator_indices,
         n_annotators,
@@ -2135,6 +2342,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2164,6 +2373,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2191,6 +2402,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2311,11 +2524,119 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return C, None, None, accuracy_params
         raise RuntimeError("unreachable posterior")
 
+    def _observation_support_mask(
+        self,
+        *,
+        prior_mask,
+        evidence_mask,
+        observed_mask,
+    ) -> np.ndarray:
+        if self.observed_class_prior_support == "observed":
+            return observed_mask.any(axis=1)
+        if self.observed_class_prior_support == "prior":
+            return prior_mask.any(axis=1)
+        if self.observed_class_prior_support == "evidence":
+            return evidence_mask.any(axis=1)
+        raise RuntimeError("unreachable observed_class_prior_support")
+
+    def _resolve_observed_class_probabilities(
+        self,
+        *,
+        P,
+        sample_embeddings,
+        gamma_reference_embeddings,
+        prior_mask,
+        evidence_mask,
+        observed_mask,
+        n_classes,
+    ) -> np.ndarray:
+        if self.observed_class_prior == "classifier":
+            return P.copy()
+        if self.observed_class_prior == "kernel":
+            if sample_embeddings is None:
+                raise ValueError("observed_class_prior='kernel' requires sample embeddings.")
+            support_mask = self._observation_support_mask(
+                prior_mask=prior_mask,
+                evidence_mask=evidence_mask,
+                observed_mask=observed_mask,
+            )
+            support = np.flatnonzero(support_mask)
+            if support.size == 0:
+                return P.copy()
+            kernel_name = self.observed_class_prior_kernel or self.class_prior_kernel or self.kernel
+            gamma = (
+                self.observed_class_prior_gamma
+                if self.observed_class_prior_gamma is not None
+                else self.class_prior_gamma
+            )
+            Kx = _pairwise_kernel(
+                sample_embeddings[support],
+                sample_embeddings,
+                kernel=kernel_name,
+                gamma=gamma,
+                normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
+                eps=self.eps,
+            )
+            if self.observed_class_prior_leave_one_out:
+                support_to_row = {sample_id: row for row, sample_id in enumerate(support)}
+                for sample_id, row in support_to_row.items():
+                    Kx[row, sample_id] = 0.0
+            alpha0 = _class_prior_alpha0_vector(self.class_prior_alpha0, n_classes)
+            alpha = alpha0[None, :] + Kx.T @ P[support]
+            return _normalize_axis(alpha, axis=1, eps=self.eps)
+        if self.observed_class_prior == "evidence_shrunk":
+            if sample_embeddings is None:
+                raise ValueError(
+                    "observed_class_prior='evidence_shrunk' requires sample embeddings."
+                )
+            support_mask = self._observation_support_mask(
+                prior_mask=prior_mask,
+                evidence_mask=evidence_mask,
+                observed_mask=observed_mask,
+            )
+            support = np.flatnonzero(support_mask)
+            alpha0 = _class_prior_alpha0_vector(self.class_prior_alpha0, n_classes)
+            if support.size == 0:
+                evidence_strength = np.zeros(P.shape[0], dtype=float)
+            else:
+                kernel_name = self.observed_class_prior_kernel or self.class_prior_kernel or self.kernel
+                gamma = (
+                    self.observed_class_prior_gamma
+                    if self.observed_class_prior_gamma is not None
+                    else self.class_prior_gamma
+                )
+                Kx = _pairwise_kernel(
+                    sample_embeddings[support],
+                    sample_embeddings,
+                    kernel=kernel_name,
+                    gamma=gamma,
+                    normalize_embeddings=self.normalize_embeddings,
+                    gamma_reference_embeddings=gamma_reference_embeddings,
+                    bandwidth_knn_k=self.bandwidth_knn_k,
+                    eps=self.eps,
+                )
+                if self.observed_class_prior_leave_one_out:
+                    support_to_row = {sample_id: row for row, sample_id in enumerate(support)}
+                    for sample_id, row in support_to_row.items():
+                        Kx[row, sample_id] = 0.0
+                eta = _compute_evidence_weights(
+                    P,
+                    self.class_prior_evidence_weight,
+                    eps=self.eps,
+                )
+                evidence_strength = Kx.T @ eta[support]
+            alpha = alpha0[None, :] + evidence_strength[:, None] * P
+            return _normalize_axis(alpha, axis=1, eps=self.eps)
+        raise RuntimeError("unreachable observed_class_prior")
+
     def _resolve_candidate_class_prior(
         self,
         *,
         P,
         sample_embeddings,
+        gamma_reference_embeddings,
         sample_indices,
         evidence_mask,
         observed_mask,
@@ -2342,21 +2663,54 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 else observed_mask.any(axis=1)
             )
             support = np.flatnonzero(support_mask)
-            alpha0 = np.full(n_classes, self.class_prior_strength / n_classes, dtype=float)
+            alpha0 = _class_prior_alpha0_vector(self.class_prior_alpha0, n_classes)
             if support.size == 0:
                 alpha = np.broadcast_to(alpha0[None, :], P_cand.shape).copy()
             else:
                 kernel_name = self.class_prior_kernel or self.kernel
-                gamma = self.class_prior_gamma if self.class_prior_gamma is not None else self.gamma
                 Kx = _pairwise_kernel(
                     sample_embeddings[support],
                     sample_embeddings[sample_indices],
                     kernel=kernel_name,
-                    gamma=gamma,
+                    gamma=self.class_prior_gamma,
                     normalize_embeddings=self.normalize_embeddings,
+                    gamma_reference_embeddings=gamma_reference_embeddings,
+                    bandwidth_knn_k=self.bandwidth_knn_k,
                     eps=self.eps,
                 )
                 alpha = alpha0[None, :] + Kx.T @ P[support]
+            return _normalize_axis(alpha, axis=1, eps=self.eps), alpha
+        if self.class_prior == "evidence_shrunk":
+            if sample_embeddings is None:
+                raise ValueError("class_prior='evidence_shrunk' requires sample embeddings.")
+            support_mask = (
+                evidence_mask.any(axis=1)
+                if self.class_prior_support == "evidence"
+                else observed_mask.any(axis=1)
+            )
+            support = np.flatnonzero(support_mask)
+            alpha0 = _class_prior_alpha0_vector(self.class_prior_alpha0, n_classes)
+            if support.size == 0:
+                evidence_strength = np.zeros(P_cand.shape[0], dtype=float)
+            else:
+                kernel_name = self.class_prior_kernel or self.kernel
+                Kx = _pairwise_kernel(
+                    sample_embeddings[support],
+                    sample_embeddings[sample_indices],
+                    kernel=kernel_name,
+                    gamma=self.class_prior_gamma,
+                    normalize_embeddings=self.normalize_embeddings,
+                    gamma_reference_embeddings=gamma_reference_embeddings,
+                    bandwidth_knn_k=self.bandwidth_knn_k,
+                    eps=self.eps,
+                )
+                eta = _compute_evidence_weights(
+                    P,
+                    self.class_prior_evidence_weight,
+                    eps=self.eps,
+                )
+                evidence_strength = Kx.T @ eta[support]
+            alpha = alpha0[None, :] + evidence_strength[:, None] * P_cand
             return _normalize_axis(alpha, axis=1, eps=self.eps), alpha
         raise RuntimeError("unreachable class_prior")
 
@@ -2505,6 +2859,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             if result.posterior_alpha is None
             else result.posterior_alpha.sum(axis=-1)
         )
+        self.last_classifier_proba_ = result.classifier_proba
+        self.last_observed_class_proba_ = result.observed_class_proba
+        self.last_candidate_class_prior_ = result.class_prior
         self.last_class_prior_ = result.class_prior
         self.last_class_prior_alpha_ = result.class_prior_alpha
         self.last_prior_mask_ = result.prior_mask
