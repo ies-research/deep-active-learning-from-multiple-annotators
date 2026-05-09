@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
 from sklearn.utils import check_random_state
 
 from skactiveml.utils import MISSING_LABEL
@@ -10,54 +11,48 @@ from skactiveml.utils import MISSING_LABEL
 from ._base import PairScorer
 
 
+# Preset names follow:
+#   <evidence_scope>_<posterior_family>_<prior_source>_prior
+# where fixed priors are annotator-independent channels, and global/local
+# priors are empirical base estimates regularized by fixed_prior_*.
 _PRESETS = {
-    "global_mace": {
-        "base_channel": "global_mace",
-        "evidence": "none",
-        "posterior": "base_only",
-    },
-    "global_mace_mace_prior": {
-        "base_channel": "global_mace",
-        "evidence": "global_mace_counts",
-        "posterior": "global_mace",
-    },
-    "local_mace_mace_prior": {
-        "base_channel": "global_mace",
-        "evidence": "local_kernel_mace_counts",
-        "posterior": "local_mace",
-    },
-    "global_accuracy_uniform": {
-        "base_channel": "global_accuracy_uniform",
-        "evidence": "none",
-        "posterior": "base_only",
-    },
-    "global_accuracy_uniform_accuracy_prior": {
-        "base_channel": "global_accuracy_uniform",
-        "evidence": "global_accuracy_counts",
-        "posterior": "global_accuracy_uniform",
-    },
-    "local_accuracy_uniform_accuracy_prior": {
-        "base_channel": "global_accuracy_uniform",
-        "evidence": "local_kernel_accuracy_counts",
-        "posterior": "local_accuracy_uniform",
-    },
-    "global_full_uniform": {
-        "base_channel": "uniform",
+    "global_full_fixed_prior": {
+        "base_channel": "fixed_full",
         "evidence": "global_soft_counts",
         "posterior": "dirichlet_global",
     },
-    "global_full_mace_prior": {
+    "global_full_global_full_prior": {
+        "base_channel": "global_full",
+        "evidence": "global_soft_counts",
+        "posterior": "dirichlet_global",
+    },
+    "global_full_global_mace_prior": {
         "base_channel": "global_mace",
         "evidence": "global_soft_counts",
         "posterior": "dirichlet_global",
+    },
+    "global_full_global_accuracy_uniform_prior": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "global_soft_counts",
+        "posterior": "dirichlet_global",
+    },
+    "local_full_fixed_prior": {
+        "base_channel": "fixed_full",
+        "evidence": "local_kernel_soft_counts",
+        "posterior": "dirichlet_local",
     },
     "local_full_global_full_prior": {
         "base_channel": "global_full",
         "evidence": "local_kernel_soft_counts",
         "posterior": "dirichlet_local",
     },
-    "local_full_mace_prior": {
+    "local_full_global_mace_prior": {
         "base_channel": "global_mace",
+        "evidence": "local_kernel_soft_counts",
+        "posterior": "dirichlet_local",
+    },
+    "local_full_global_accuracy_uniform_prior": {
+        "base_channel": "global_accuracy_uniform",
         "evidence": "local_kernel_soft_counts",
         "posterior": "dirichlet_local",
     },
@@ -66,15 +61,75 @@ _PRESETS = {
         "evidence": "local_kernel_soft_counts",
         "posterior": "dirichlet_local",
     },
-    "local_full_uniform_accuracy_prior": {
-        "base_channel": "global_accuracy_uniform",
-        "evidence": "local_kernel_soft_counts",
-        "posterior": "dirichlet_local",
-    },
-    "local_full_local_uniform_accuracy_prior": {
+    "local_full_local_accuracy_uniform_prior": {
         "base_channel": "local_accuracy_uniform",
         "evidence": "local_kernel_soft_counts",
         "posterior": "dirichlet_local",
+    },
+    "global_mace_fixed_prior": {
+        "base_channel": "fixed_mace",
+        "evidence": "global_mace_counts",
+        "posterior": "global_mace",
+    },
+    "global_mace_global_mace_prior": {
+        "base_channel": "global_mace",
+        "evidence": "global_mace_counts",
+        "posterior": "global_mace",
+    },
+    "global_mace_global_full_prior": {
+        "base_channel": "global_full",
+        "evidence": "global_mace_counts",
+        "posterior": "global_mace",
+    },
+    "local_mace_fixed_prior": {
+        "base_channel": "fixed_mace",
+        "evidence": "local_kernel_mace_counts",
+        "posterior": "local_mace",
+    },
+    "local_mace_global_mace_prior": {
+        "base_channel": "global_mace",
+        "evidence": "local_kernel_mace_counts",
+        "posterior": "local_mace",
+    },
+    "local_mace_global_full_prior": {
+        "base_channel": "global_full",
+        "evidence": "local_kernel_mace_counts",
+        "posterior": "local_mace",
+    },
+    "global_accuracy_uniform_fixed_prior": {
+        "base_channel": "fixed_accuracy_uniform",
+        "evidence": "global_accuracy_counts",
+        "posterior": "global_accuracy_uniform",
+    },
+    "global_accuracy_uniform_global_accuracy_uniform_prior": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "global_accuracy_counts",
+        "posterior": "global_accuracy_uniform",
+    },
+    "global_accuracy_uniform_global_full_prior": {
+        "base_channel": "global_full",
+        "evidence": "global_accuracy_counts",
+        "posterior": "global_accuracy_uniform",
+    },
+    "local_accuracy_uniform_fixed_prior": {
+        "base_channel": "fixed_accuracy_uniform",
+        "evidence": "local_kernel_accuracy_counts",
+        "posterior": "local_accuracy_uniform",
+    },
+    "local_accuracy_uniform_global_accuracy_uniform_prior": {
+        "base_channel": "global_accuracy_uniform",
+        "evidence": "local_kernel_accuracy_counts",
+        "posterior": "local_accuracy_uniform",
+    },
+    "local_accuracy_uniform_global_full_prior": {
+        "base_channel": "global_full",
+        "evidence": "local_kernel_accuracy_counts",
+        "posterior": "local_accuracy_uniform",
+    },
+    "local_balanced_accuracy_global_full_prior": {
+        "base_channel": "global_full",
+        "evidence": "local_kernel_balanced_accuracy_counts",
+        "posterior": "local_balanced_accuracy",
     },
 }
 
@@ -82,7 +137,13 @@ _PRESETS = {
 @dataclass
 class ChannelEstimationResult:
     base_channel: np.ndarray
-    evidence_counts: np.ndarray | MaceEvidenceCounts | AccuracyEvidenceCounts | None
+    evidence_counts: (
+        np.ndarray
+        | MaceEvidenceCounts
+        | AccuracyEvidenceCounts
+        | "LocalBalancedAccuracyResult"
+        | None
+    )
     posterior_alpha: np.ndarray | None
     posterior_channel: np.ndarray
     base_mace_params: "MaceChannelParameters | None"
@@ -95,12 +156,37 @@ class ChannelEstimationResult:
     observed_class_proba: np.ndarray
     class_prior: np.ndarray
     class_prior_alpha: np.ndarray | None
+    class_prior_laplace_logits: np.ndarray | None
+    class_prior_laplace_logit_variance: np.ndarray | None
+    observed_laplace_logit_variance: np.ndarray | None
+    local_class_accuracy: np.ndarray | None
+    local_balanced_accuracy: np.ndarray | None
+    local_corrected_balanced_accuracy: np.ndarray | None
+    local_balanced_total: np.ndarray | None
+    local_balanced_correct: np.ndarray | None
     prior_mask: np.ndarray
     evidence_mask: np.ndarray
     prior_observations: str
     uses_same_prior_and_evidence: bool
     sample_indices: np.ndarray
     annotator_indices: np.ndarray
+
+
+@dataclass
+class LaplacePredictiveResult:
+    proba: np.ndarray
+    logit_variance: np.ndarray
+    samples: np.ndarray | None = None
+
+
+@dataclass
+class LocalBalancedAccuracyResult:
+    theta: np.ndarray
+    balanced_accuracy: np.ndarray
+    corrected_balanced_accuracy: np.ndarray
+    total: np.ndarray
+    correct: np.ndarray
+    prior_diag: np.ndarray
 
 
 @dataclass
@@ -135,6 +221,13 @@ class AccuracyEvidenceCounts:
 def _normalize_axis(X: np.ndarray, *, axis: int = -1, eps: float = 1e-12):
     X = np.asarray(X, dtype=float)
     return X / np.maximum(X.sum(axis=axis, keepdims=True), eps)
+
+
+def _softmax_logits(logits: np.ndarray, *, axis: int = -1) -> np.ndarray:
+    logits = np.asarray(logits, dtype=float)
+    shifted = logits - np.max(logits, axis=axis, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / np.maximum(exp.sum(axis=axis, keepdims=True), 1e-300)
 
 
 def _l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -182,12 +275,87 @@ def _resolve_gamma_from_embeddings(
             if pairwise.size == 0:
                 return 1.0
             scale = np.min(pairwise) if gamma_name == "minimum" else np.median(pairwise)
-        print(scale)
-        return float(1.0 / (2*max(scale, eps)))
-    gamma = float(gamma)
+        return float(1.0 / (2.0 * max(scale, eps)))
+    try:
+        gamma = float(gamma)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "gamma must be positive, None, 'median', 'minimum', 'knn', "
+            "'self_tuning', or 'local_scale'."
+        ) from exc
     if gamma <= 0:
-        raise ValueError("gamma must be positive, None, 'median', 'minimum', or 'knn'.")
+        raise ValueError(
+            "gamma must be positive, None, 'median', 'minimum', 'knn', "
+            "'self_tuning', or 'local_scale'."
+        )
     return gamma
+
+
+def _resolve_local_scales(
+    points: np.ndarray,
+    reference: np.ndarray,
+    *,
+    bandwidth_knn_k: int = 10,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    points = np.asarray(points, dtype=float)
+    reference = np.asarray(reference, dtype=float)
+    if points.ndim != 2 or reference.ndim != 2:
+        raise ValueError("points and reference must be 2D arrays.")
+    if points.shape[1] != reference.shape[1]:
+        raise ValueError("points and reference must have the same feature dimension.")
+    if points.shape[0] == 0:
+        return np.empty(0, dtype=float)
+    if reference.shape[0] == 0:
+        return np.ones(points.shape[0], dtype=float)
+
+    k = max(int(bandwidth_knn_k), 1)
+    min_positive = float(np.sqrt(eps))
+    n_ref = reference.shape[0]
+    nn = NearestNeighbors(metric="euclidean")
+    nn.fit(reference)
+
+    fallback_scale = 1.0
+    if n_ref > 1:
+        n_ref_neighbors = min(n_ref, 2)
+        while True:
+            ref_dist = nn.kneighbors(
+                reference,
+                n_neighbors=n_ref_neighbors,
+                return_distance=True,
+            )[0]
+            positive = ref_dist[ref_dist > min_positive]
+            if positive.size or n_ref_neighbors == n_ref:
+                break
+            n_ref_neighbors = min(n_ref, max(n_ref_neighbors + 1, 2 * n_ref_neighbors))
+        if positive.size:
+            fallback_scale = float(np.median(positive))
+
+    scales = np.full(points.shape[0], np.nan, dtype=float)
+    n_neighbors = min(n_ref, max(1, min(n_ref, k + 1)))
+    while True:
+        distances = nn.kneighbors(
+            points,
+            n_neighbors=n_neighbors,
+            return_distance=True,
+        )[0]
+        positive = distances > min_positive
+        for i in np.flatnonzero(np.isnan(scales)):
+            row_positive = distances[i, positive[i]]
+            if row_positive.size >= k:
+                scales[i] = row_positive[k - 1]
+            elif n_neighbors == n_ref and row_positive.size > 0:
+                scales[i] = row_positive[-1]
+            elif n_neighbors == n_ref:
+                scales[i] = fallback_scale
+        if np.all(np.isfinite(scales)):
+            break
+        if n_neighbors == n_ref:
+            scales[~np.isfinite(scales)] = fallback_scale
+            break
+        n_neighbors = min(n_ref, max(n_neighbors + 1, 2 * n_neighbors))
+
+    return np.maximum(scales, min_positive)
 
 
 def _pairwise_kernel(
@@ -217,6 +385,7 @@ def _pairwise_kernel(
     if kernel == "rbf":
         Xr = _l2_normalize(X, eps=eps) if normalize_embeddings else X
         Yr = _l2_normalize(Y, eps=eps) if normalize_embeddings else Y
+        gamma_name = None if gamma is None else str(gamma).lower()
         gamma_ref = X if X.shape[0] >= 2 else Y
         if gamma_reference_embeddings is not None:
             gamma_ref = np.asarray(gamma_reference_embeddings, dtype=float)
@@ -228,15 +397,30 @@ def _pairwise_kernel(
                     "as the kernel inputs."
                 )
         gamma_ref = _l2_normalize(gamma_ref, eps=eps) if normalize_embeddings else gamma_ref
+        x2 = np.sum(Xr * Xr, axis=1)[:, None]
+        y2 = np.sum(Yr * Yr, axis=1)[None, :]
+        d2 = np.maximum(x2 + y2 - 2.0 * (Xr @ Yr.T), 0.0)
+        if gamma_name in {"self_tuning", "local_scale"}:
+            scale_x = _resolve_local_scales(
+                Xr,
+                gamma_ref,
+                bandwidth_knn_k=bandwidth_knn_k,
+                eps=eps,
+            )
+            scale_y = _resolve_local_scales(
+                Yr,
+                gamma_ref,
+                bandwidth_knn_k=bandwidth_knn_k,
+                eps=eps,
+            )
+            denom = np.maximum(scale_x[:, None] * scale_y[None, :], eps)
+            return np.exp(-d2 / denom)
         gamma_value = _resolve_gamma_from_embeddings(
             gamma_ref,
             gamma,
             bandwidth_knn_k=bandwidth_knn_k,
             eps=eps,
         )
-        x2 = np.sum(Xr * Xr, axis=1)[:, None]
-        y2 = np.sum(Yr * Yr, axis=1)[None, :]
-        d2 = np.maximum(x2 + y2 - 2.0 * (Xr @ Yr.T), 0.0)
         return np.exp(-float(gamma_value) * d2)
     raise ValueError("kernel must be one of {'rbf', 'cosine'}.")
 
@@ -470,13 +654,78 @@ def _compute_local_kernel_soft_counts(
     return counts
 
 
-def _mace_bias_prior_vector(bias_prior, n_classes: int) -> np.ndarray:
-    beta = np.asarray(bias_prior, dtype=float)
-    if beta.ndim == 0:
-        beta = np.full(n_classes, float(beta), dtype=float)
-    if beta.shape != (n_classes,) or np.any(beta <= 0):
-        raise ValueError("mace_bias_prior must be a positive scalar or length-K vector.")
-    return beta
+def _compute_local_kernel_balanced_accuracy(
+    P: np.ndarray,
+    y_idx: np.ndarray,
+    observation_mask: np.ndarray,
+    *,
+    sample_embeddings: np.ndarray,
+    candidate_indices: np.ndarray,
+    annotator_indices: np.ndarray,
+    prior_diag: np.ndarray,
+    prior_strength: float,
+    n_classes: int,
+    kernel: str,
+    gamma,
+    normalize_embeddings: bool,
+    gamma_reference_embeddings: np.ndarray | None = None,
+    bandwidth_knn_k: int = 10,
+    eps: float = 1e-12,
+) -> LocalBalancedAccuracyResult:
+    candidate_indices = np.asarray(candidate_indices, dtype=int)
+    annotator_indices = np.asarray(annotator_indices, dtype=int)
+    prior_diag = np.asarray(prior_diag, dtype=float)
+    expected_prior_shape = (len(annotator_indices), n_classes)
+    if prior_diag.shape != expected_prior_shape:
+        raise ValueError(
+            "prior_diag must have shape "
+            f"{expected_prior_shape}, got {prior_diag.shape}."
+        )
+    if prior_strength <= 0:
+        raise ValueError("prior_strength must be > 0.")
+    shape = (len(candidate_indices), len(annotator_indices), n_classes)
+    total = np.zeros(shape, dtype=float)
+    correct = np.zeros(shape, dtype=float)
+    obs_s, obs_a = np.where(observation_mask)
+    if obs_s.size > 0 and len(candidate_indices) > 0:
+        obs_y = y_idx[obs_s, obs_a]
+        Kx = _pairwise_kernel(
+            sample_embeddings[obs_s],
+            sample_embeddings[candidate_indices],
+            kernel=kernel,
+            gamma=gamma,
+            normalize_embeddings=normalize_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
+            bandwidth_knn_k=bandwidth_knn_k,
+            eps=eps,
+        )
+        for j, target_m in enumerate(annotator_indices):
+            take_annotator = obs_a == target_m
+            if not np.any(take_annotator):
+                continue
+            src_s = obs_s[take_annotator]
+            src_y = obs_y[take_annotator]
+            V = Kx[take_annotator]
+            P_src = P[src_s]
+            total[:, j, :] = V.T @ P_src
+            y_onehot = np.zeros_like(P_src, dtype=float)
+            y_onehot[np.arange(src_y.size), src_y] = 1.0
+            correct[:, j, :] = V.T @ (P_src * y_onehot)
+    theta = (
+        prior_strength * prior_diag[None, :, :] + correct
+    ) / np.maximum(prior_strength + total, eps)
+    balanced_accuracy = np.mean(theta, axis=2)
+    chance = 1.0 / n_classes
+    corrected = (balanced_accuracy - chance) / np.maximum(1.0 - chance, eps)
+    corrected = np.maximum(corrected, 0.0)
+    return LocalBalancedAccuracyResult(
+        theta=theta,
+        balanced_accuracy=balanced_accuracy,
+        corrected_balanced_accuracy=corrected,
+        total=total,
+        correct=correct,
+        prior_diag=prior_diag,
+    )
 
 
 def _class_prior_alpha0_vector(alpha0, n_classes: int) -> np.ndarray:
@@ -517,6 +766,60 @@ def _accuracy_uniform_channel_from_theta(
     diag = np.arange(n_classes)
     C[..., diag, diag] = theta[..., None]
     return _normalize_axis(C, axis=-1, eps=eps)
+
+
+def _classwise_accuracy_channel_from_theta(
+    theta: np.ndarray,
+    *,
+    n_classes: int,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    if n_classes < 2:
+        raise ValueError("class-wise accuracy channels require at least 2 classes.")
+    theta = np.clip(np.asarray(theta, dtype=float), 0.0, 1.0)
+    if theta.shape[-1] != n_classes:
+        raise ValueError(
+            "theta must have one entry per class on its last axis; "
+            f"expected {n_classes}, got {theta.shape[-1]}."
+        )
+    C = np.broadcast_to(
+        ((1.0 - theta) / (n_classes - 1))[..., :, None],
+        (*theta.shape, n_classes),
+    ).copy()
+    diag = np.arange(n_classes)
+    C[..., diag, diag] = theta
+    return _normalize_axis(C, axis=-1, eps=eps)
+
+
+def _full_channel_to_accuracy_uniform_params(
+    B: np.ndarray,
+    *,
+    eps: float = 1e-12,
+) -> AccuracyUniformChannelParameters:
+    B = _normalize_axis(np.clip(np.asarray(B, dtype=float), eps, None), axis=-1, eps=eps)
+    theta = np.mean(np.diagonal(B, axis1=-2, axis2=-1), axis=-1)
+    theta = np.clip(theta, eps, 1.0 - eps)
+    return AccuracyUniformChannelParameters(theta=theta)
+
+
+def _full_channel_to_mace_params(
+    B: np.ndarray,
+    *,
+    eps: float = 1e-12,
+) -> MaceChannelParameters:
+    B = _normalize_axis(np.clip(np.asarray(B, dtype=float), eps, None), axis=-1, eps=eps)
+    n_classes = B.shape[-1]
+    theta = np.mean(np.diagonal(B, axis1=-2, axis2=-1), axis=-1)
+    theta = np.clip(theta, eps, 1.0 - eps)
+    off_diag = B.copy()
+    diag = np.arange(n_classes)
+    off_diag[..., diag, diag] = 0.0
+    g = off_diag.sum(axis=-2)
+    fallback = B.mean(axis=-2)
+    g_sum = g.sum(axis=-1, keepdims=True)
+    g = np.where(g_sum > eps, g / np.maximum(g_sum, eps), fallback)
+    g = _normalize_axis(np.clip(g, eps, None), axis=-1, eps=eps)
+    return MaceChannelParameters(theta=theta, g=g)
 
 
 def _compute_global_accuracy_counts(
@@ -634,13 +937,14 @@ def _estimate_global_accuracy_uniform_parameters(
     weights: np.ndarray,
     *,
     n_annotators: int,
-    theta_prior: tuple[float, float],
+    n_classes: int,
+    fixed_prior_accuracy,
+    fixed_prior_strength: float,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> AccuracyUniformChannelParameters:
-    a, b = map(float, theta_prior)
-    if a <= 0 or b <= 0:
-        raise ValueError("mace_theta_prior entries must be positive.")
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    strength = _resolve_fixed_prior_strength(fixed_prior_strength)
     counts = _compute_global_accuracy_counts(
         P,
         y_idx,
@@ -651,8 +955,8 @@ def _estimate_global_accuracy_uniform_parameters(
     )
     return _accuracy_params_from_counts(
         counts,
-        alpha_prior=np.full(n_annotators, a, dtype=float),
-        beta_prior=np.full(n_annotators, b, dtype=float),
+        alpha_prior=np.full(n_annotators, strength * accuracy, dtype=float),
+        beta_prior=np.full(n_annotators, strength * (1.0 - accuracy), dtype=float),
         eps=eps,
     )
 
@@ -667,7 +971,9 @@ def _estimate_local_accuracy_uniform_parameters(
     candidate_indices: np.ndarray,
     annotator_indices: np.ndarray,
     n_annotators: int,
-    theta_prior: tuple[float, float],
+    n_classes: int,
+    fixed_prior_accuracy,
+    fixed_prior_strength: float,
     kernel: str,
     gamma,
     normalize_embeddings: bool,
@@ -676,9 +982,8 @@ def _estimate_local_accuracy_uniform_parameters(
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> AccuracyUniformChannelParameters:
-    a, b = map(float, theta_prior)
-    if a <= 0 or b <= 0:
-        raise ValueError("mace_theta_prior entries must be positive.")
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    strength = _resolve_fixed_prior_strength(fixed_prior_strength)
     counts = _compute_local_kernel_accuracy_counts(
         P,
         y_idx,
@@ -699,8 +1004,8 @@ def _estimate_local_accuracy_uniform_parameters(
     shape = (len(candidate_indices), len(annotator_indices))
     return _accuracy_params_from_counts(
         counts,
-        alpha_prior=np.full(shape, a, dtype=float),
-        beta_prior=np.full(shape, b, dtype=float),
+        alpha_prior=np.full(shape, strength * accuracy, dtype=float),
+        beta_prior=np.full(shape, strength * (1.0 - accuracy), dtype=float),
         eps=eps,
     )
 
@@ -847,15 +1152,15 @@ def _estimate_global_mace_parameters(
     *,
     n_annotators: int,
     n_classes: int,
-    theta_prior: tuple[float, float],
-    bias_prior,
+    fixed_prior_accuracy,
+    fixed_prior_strength: float,
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> MaceChannelParameters:
-    a, b = map(float, theta_prior)
-    if a <= 0 or b <= 0:
-        raise ValueError("mace_theta_prior entries must be positive.")
-    beta = _mace_bias_prior_vector(bias_prior, n_classes)
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    strength = _resolve_fixed_prior_strength(fixed_prior_strength)
+    theta = _fixed_mace_theta_from_accuracy(accuracy, n_classes)
+    g_prior = np.full(n_classes, strength / n_classes, dtype=float)
     counts = _compute_global_mace_counts(
         P,
         y_idx,
@@ -867,9 +1172,9 @@ def _estimate_global_mace_parameters(
     )
     return _mace_params_from_counts(
         counts,
-        theta_success_prior=np.full(n_annotators, a, dtype=float),
-        theta_failure_prior=np.full(n_annotators, b, dtype=float),
-        g_prior=np.broadcast_to(beta[None, :], (n_annotators, n_classes)),
+        theta_success_prior=np.full(n_annotators, strength * theta, dtype=float),
+        theta_failure_prior=np.full(n_annotators, strength * (1.0 - theta), dtype=float),
+        g_prior=np.broadcast_to(g_prior[None, :], (n_annotators, n_classes)),
         eps=eps,
     )
 
@@ -885,8 +1190,8 @@ def _estimate_local_mace_parameters(
     annotator_indices: np.ndarray,
     n_annotators: int,
     n_classes: int,
-    theta_prior: tuple[float, float],
-    bias_prior,
+    fixed_prior_accuracy,
+    fixed_prior_strength: float,
     kernel: str,
     gamma,
     normalize_embeddings: bool,
@@ -895,10 +1200,10 @@ def _estimate_local_mace_parameters(
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> MaceChannelParameters:
-    a, b = map(float, theta_prior)
-    if a <= 0 or b <= 0:
-        raise ValueError("mace_theta_prior entries must be positive.")
-    beta = _mace_bias_prior_vector(bias_prior, n_classes)
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    strength = _resolve_fixed_prior_strength(fixed_prior_strength)
+    theta = _fixed_mace_theta_from_accuracy(accuracy, n_classes)
+    g_prior = np.full(n_classes, strength / n_classes, dtype=float)
     counts = _compute_local_kernel_mace_counts(
         P,
         y_idx,
@@ -920,15 +1225,79 @@ def _estimate_local_mace_parameters(
     shape = (len(candidate_indices), len(annotator_indices))
     return _mace_params_from_counts(
         counts,
-        theta_success_prior=np.full(shape, a, dtype=float),
-        theta_failure_prior=np.full(shape, b, dtype=float),
-        g_prior=np.broadcast_to(beta, (*shape, n_classes)),
+        theta_success_prior=np.full(shape, strength * theta, dtype=float),
+        theta_failure_prior=np.full(shape, strength * (1.0 - theta), dtype=float),
+        g_prior=np.broadcast_to(g_prior, (*shape, n_classes)),
         eps=eps,
     )
 
 
 def _estimate_base_uniform(n_annotators: int, n_classes: int) -> np.ndarray:
     return np.full((n_annotators, n_classes, n_classes), 1.0 / n_classes, dtype=float)
+
+
+def _resolve_fixed_prior_accuracy(value, n_classes: int) -> float:
+    if n_classes < 2:
+        raise ValueError("fixed priors require at least 2 classes.")
+    chance = 1.0 / n_classes
+    if value is None:
+        return chance
+    accuracy = float(value)
+    if accuracy < chance or accuracy > 1.0:
+        raise ValueError(
+            "fixed_prior_accuracy must be None or a scalar in "
+            f"[1 / n_classes, 1], got {accuracy} for n_classes={n_classes}."
+        )
+    return accuracy
+
+
+def _resolve_fixed_prior_strength(value) -> float:
+    strength = float(value)
+    if strength <= 0:
+        raise ValueError("fixed_prior_strength must be > 0.")
+    return strength
+
+
+def _fixed_mace_theta_from_accuracy(accuracy: float, n_classes: int) -> float:
+    return (n_classes * accuracy - 1.0) / (n_classes - 1.0)
+
+
+def _fixed_full_channel(
+    *,
+    n_annotators: int,
+    n_classes: int,
+    fixed_prior_accuracy,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    theta = np.full(n_annotators, accuracy, dtype=float)
+    return _accuracy_uniform_channel_from_theta(theta, n_classes=n_classes, eps=eps)
+
+
+def _fixed_mace_parameters(
+    *,
+    n_annotators: int,
+    n_classes: int,
+    fixed_prior_accuracy,
+) -> MaceChannelParameters:
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    theta = _fixed_mace_theta_from_accuracy(accuracy, n_classes)
+    g = np.full((n_annotators, n_classes), 1.0 / n_classes, dtype=float)
+    return MaceChannelParameters(
+        theta=np.full(n_annotators, theta, dtype=float),
+        g=g,
+    )
+
+
+def _fixed_accuracy_uniform_parameters(
+    *,
+    n_annotators: int,
+    n_classes: int,
+    fixed_prior_accuracy,
+) -> AccuracyUniformChannelParameters:
+    accuracy = _resolve_fixed_prior_accuracy(fixed_prior_accuracy, n_classes)
+    theta = np.full(n_annotators, accuracy, dtype=float)
+    return AccuracyUniformChannelParameters(theta=theta)
 
 
 def _estimate_base_mace(
@@ -939,8 +1308,8 @@ def _estimate_base_mace(
     *,
     n_annotators: int,
     n_classes: int,
-    theta_prior: tuple[float, float],
-    bias_prior,
+    fixed_prior_accuracy,
+    fixed_prior_strength: float,
     eps: float = 1e-12,
 ) -> np.ndarray:
     params = _estimate_global_mace_parameters(
@@ -950,8 +1319,8 @@ def _estimate_base_mace(
         weights,
         n_annotators=n_annotators,
         n_classes=n_classes,
-        theta_prior=theta_prior,
-        bias_prior=bias_prior,
+        fixed_prior_accuracy=fixed_prior_accuracy,
+        fixed_prior_strength=fixed_prior_strength,
         eps=eps,
     )
     return _mace_channel_from_theta_g(
@@ -1006,14 +1375,11 @@ def _estimate_base_global_full(
     *,
     n_annotators: int,
     n_classes: int,
-    alpha0,
+    fixed_prior_accuracy,
+    fixed_prior_strength: float,
     eps: float = 1e-12,
 ) -> np.ndarray:
-    alpha0 = np.asarray(alpha0, dtype=float)
-    if alpha0.ndim == 0:
-        alpha0 = np.full(n_classes, float(alpha0), dtype=float)
-    if alpha0.shape != (n_classes,) or np.any(alpha0 <= 0):
-        raise ValueError("global_full_alpha0 must be a positive scalar or length-K vector.")
+    strength = _resolve_fixed_prior_strength(fixed_prior_strength)
     counts = _compute_global_soft_counts(
         P,
         y_idx,
@@ -1022,7 +1388,13 @@ def _estimate_base_global_full(
         n_annotators=n_annotators,
         n_classes=n_classes,
     )
-    return _normalize_axis(counts + alpha0[None, None, :], axis=2, eps=eps)
+    prior = strength * _fixed_full_channel(
+        n_annotators=n_annotators,
+        n_classes=n_classes,
+        fixed_prior_accuracy=fixed_prior_accuracy,
+        eps=eps,
+    )
+    return _normalize_axis(counts + prior, axis=2, eps=eps)
 
 
 def _combine_base_only(
@@ -1325,6 +1697,50 @@ def _compute_information_gain(
     return np.sum(p[:, None, :, None] * C * log_ratio, axis=(2, 3))
 
 
+def _compute_instance_difficulty_gate(
+    p: np.ndarray,
+    *,
+    power: float = 1.0,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    p = _normalize_axis(np.clip(p, eps, 1.0), axis=1, eps=eps)
+    K = p.shape[1]
+    if K < 2:
+        raise ValueError("instance difficulty gating requires at least 2 classes.")
+    entropy = -np.sum(p * np.log(p), axis=1)
+    gate = 1.0 - entropy / np.log(K)
+    gate = np.clip(gate, 0.0, 1.0)
+    return gate ** float(power)
+
+
+def _apply_instance_difficulty_gate(
+    p: np.ndarray,
+    C: np.ndarray,
+    *,
+    power: float = 1.0,
+    eps: float = 1e-12,
+) -> tuple[np.ndarray, np.ndarray]:
+    gate = _compute_instance_difficulty_gate(p, power=power, eps=eps)
+    C = _normalize_axis(np.clip(C, eps, 1.0), axis=3, eps=eps)
+    guess = np.mean(C, axis=2)
+    C_guess = np.broadcast_to(guess[:, :, None, :], C.shape)
+    C_gated = gate[:, None, None, None] * C + (
+        1.0 - gate[:, None, None, None]
+    ) * C_guess
+    return _normalize_axis(C_gated, axis=3, eps=eps), gate
+
+
+def _compute_difficulty_gated_information_gain(
+    p: np.ndarray,
+    C: np.ndarray,
+    *,
+    power: float = 1.0,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    C_gated, _ = _apply_instance_difficulty_gate(p, C, power=power, eps=eps)
+    return _compute_information_gain(p, C_gated, eps=eps)
+
+
 class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     """Preset-driven post-hoc annotator-channel scorer.
 
@@ -1337,7 +1753,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     def __init__(
         self,
         *,
-        preset: str | None = "local_full_mace_prior",
+        preset: str | None = "local_full_global_mace_prior",
         base_channel: str | None = None,
         evidence: str | None = None,
         posterior: str | None = None,
@@ -1363,10 +1779,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         use_annotator_embeddings: bool = False,
         annotator_kernel: str = "rbf",
         annotator_gamma=None,
-        mace_theta_prior=(1.0, 1.0),
-        mace_bias_prior=1.0,
         diag_theta_prior=(1.0, 1.0),
-        global_full_alpha0=1.0,
+        fixed_prior_accuracy: float | None = None,
+        fixed_prior_strength: float = 1.0,
         class_prior_alpha0=1.0,
         class_prior_kernel: str | None = "rbf",
         class_prior_gamma="minimum",
@@ -1377,6 +1792,11 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         observed_class_prior_gamma=None,
         observed_class_prior_support: str = "observed",
         observed_class_prior_leave_one_out: bool = False,
+        laplace_prior_precision: float = 1.0,
+        laplace_include_bias: bool = True,
+        laplace_predictive_samples: int = 32,
+        laplace_variance_scale: float = 1.0,
+        difficulty_gate_power: float = 1.0,
         n_mc_samples: int = 0,
         sample_class_prior: bool = False,
         sample_channel: bool = False,
@@ -1394,6 +1814,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         )
         if self.base_channel == "mace":
             self.base_channel = "global_mace"
+        if self.base_channel == "local_ba":
+            self.base_channel = "local_balanced_accuracy"
         self.evidence = str(evidence if evidence is not None else preset_cfg.get("evidence"))
         self.posterior = str(posterior if posterior is not None else preset_cfg.get("posterior"))
         self.utility = str(utility)
@@ -1425,10 +1847,11 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.use_annotator_embeddings = bool(use_annotator_embeddings)
         self.annotator_kernel = str(annotator_kernel)
         self.annotator_gamma = annotator_gamma
-        self.mace_theta_prior = tuple(mace_theta_prior)
-        self.mace_bias_prior = mace_bias_prior
         self.diag_theta_prior = tuple(diag_theta_prior)
-        self.global_full_alpha0 = global_full_alpha0
+        self.fixed_prior_accuracy = (
+            None if fixed_prior_accuracy is None else float(fixed_prior_accuracy)
+        )
+        self.fixed_prior_strength = float(fixed_prior_strength)
         self.class_prior_alpha0 = class_prior_alpha0
         self.class_prior_kernel = class_prior_kernel
         self.class_prior_gamma = class_prior_gamma
@@ -1439,6 +1862,11 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.observed_class_prior_gamma = observed_class_prior_gamma
         self.observed_class_prior_support = str(observed_class_prior_support)
         self.observed_class_prior_leave_one_out = bool(observed_class_prior_leave_one_out)
+        self.laplace_prior_precision = float(laplace_prior_precision)
+        self.laplace_include_bias = bool(laplace_include_bias)
+        self.laplace_predictive_samples = int(laplace_predictive_samples)
+        self.laplace_variance_scale = float(laplace_variance_scale)
+        self.difficulty_gate_power = float(difficulty_gate_power)
         self.n_mc_samples = int(n_mc_samples)
         self.sample_class_prior = bool(sample_class_prior)
         self.sample_channel = bool(sample_channel)
@@ -1496,18 +1924,24 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     def _validate_combination(self):
         if self.base_channel not in {
             "uniform",
+            "fixed_full",
+            "fixed_mace",
             "global_mace",
             "local_mace",
             "global_accuracy_uniform",
+            "fixed_accuracy_uniform",
             "local_accuracy_uniform",
             "diag_uniform",
             "global_full",
+            "local_balanced_accuracy",
         }:
             raise ValueError(
                 "base_channel must be one of "
-                "{'uniform', 'global_mace', 'local_mace', "
-                "'global_accuracy_uniform', 'local_accuracy_uniform', "
-                "'diag_uniform', 'global_full'}."
+                "{'uniform', 'fixed_full', 'fixed_mace', "
+                "'global_mace', 'local_mace', "
+                "'global_accuracy_uniform', 'fixed_accuracy_uniform', "
+                "'local_accuracy_uniform', "
+                "'diag_uniform', 'global_full', 'local_balanced_accuracy'}."
             )
         if self.evidence not in {
             "none",
@@ -1517,12 +1951,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             "local_kernel_mace_counts",
             "global_accuracy_counts",
             "local_kernel_accuracy_counts",
+            "local_kernel_balanced_accuracy_counts",
         }:
             raise ValueError(
                 "evidence must be one of "
                 "{'none', 'global_soft_counts', 'local_kernel_soft_counts', "
                 "'global_mace_counts', 'local_kernel_mace_counts', "
-                "'global_accuracy_counts', 'local_kernel_accuracy_counts'}."
+                "'global_accuracy_counts', 'local_kernel_accuracy_counts', "
+                "'local_kernel_balanced_accuracy_counts'}."
             )
         if self.posterior not in {
             "base_only",
@@ -1532,12 +1968,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             "local_mace",
             "global_accuracy_uniform",
             "local_accuracy_uniform",
+            "local_balanced_accuracy",
         }:
             raise ValueError(
                 "posterior must be one of "
                 "{'base_only', 'dirichlet_global', 'dirichlet_local', "
                 "'global_mace', 'local_mace', "
-                "'global_accuracy_uniform', 'local_accuracy_uniform'}."
+                "'global_accuracy_uniform', 'local_accuracy_uniform', "
+                "'local_balanced_accuracy'}."
             )
         if self.evidence == "none" and self.posterior != "base_only":
             raise ValueError("evidence='none' requires posterior='base_only'.")
@@ -1571,41 +2009,55 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 "posterior='local_accuracy_uniform' requires "
                 "evidence='local_kernel_accuracy_counts'."
             )
+        if (
+            self.posterior == "local_balanced_accuracy"
+            and self.evidence != "local_kernel_balanced_accuracy_counts"
+        ):
+            raise ValueError(
+                "posterior='local_balanced_accuracy' requires "
+                "evidence='local_kernel_balanced_accuracy_counts'."
+            )
         if self.posterior in {"global_mace", "local_mace"} and self.base_channel not in {
+            "fixed_mace",
             "global_mace",
-            "local_mace",
+            "global_full",
         }:
             raise ValueError(
-                "MACE posteriors require base_channel in {'global_mace', 'local_mace'}."
+                "MACE posteriors require base_channel in "
+                "{'fixed_mace', 'global_mace', 'global_full'}."
             )
-        if self.posterior == "global_mace" and self.base_channel == "local_mace":
-            raise ValueError("posterior='global_mace' requires base_channel='global_mace'.")
         if self.posterior in {
             "global_accuracy_uniform",
             "local_accuracy_uniform",
         } and self.base_channel not in {
+            "uniform",
             "global_accuracy_uniform",
-            "local_accuracy_uniform",
+            "fixed_accuracy_uniform",
+            "global_full",
         }:
             raise ValueError(
                 "accuracy-uniform posteriors require base_channel in "
-                "{'global_accuracy_uniform', 'local_accuracy_uniform'}."
-            )
-        if (
-            self.posterior == "global_accuracy_uniform"
-            and self.base_channel == "local_accuracy_uniform"
-        ):
-            raise ValueError(
-                "posterior='global_accuracy_uniform' requires "
-                "base_channel='global_accuracy_uniform'."
+                "{'uniform', 'global_accuracy_uniform', 'fixed_accuracy_uniform', "
+                "'global_full'}."
             )
         if self.posterior == "dirichlet_global" and self.base_channel in {
             "local_mace",
             "local_accuracy_uniform",
+            "local_balanced_accuracy",
         }:
             raise ValueError("posterior='dirichlet_global' requires a global base_channel.")
+        if self.posterior == "local_balanced_accuracy" and self.base_channel != "global_full":
+            raise ValueError(
+                "posterior='local_balanced_accuracy' requires base_channel='global_full'."
+            )
         if self.prior_strength <= 0:
             raise ValueError("prior_strength must be > 0.")
+        if self.fixed_prior_accuracy is not None and not (
+            0.0 < self.fixed_prior_accuracy <= 1.0
+        ):
+            raise ValueError("fixed_prior_accuracy must be None or in (0, 1].")
+        if self.fixed_prior_strength <= 0:
+            raise ValueError("fixed_prior_strength must be > 0.")
         if self.prior_observations not in {"same", "separate", "none", "initial"}:
             raise ValueError(
                 "prior_observations must be one of {'same', 'separate', 'none', 'initial'}."
@@ -1616,10 +2068,26 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             "expected_accuracy",
             "bias_corrected_accuracy",
             "information_gain",
+            "difficulty_gated_information_gain",
+            "local_balanced_accuracy",
+            "local_corrected_balanced_accuracy",
+            "local_ba",
+            "local_cba",
         }:
             raise ValueError(
                 "utility must be one of "
-                "{'expected_accuracy', 'bias_corrected_accuracy', 'information_gain'}."
+                "{'expected_accuracy', 'bias_corrected_accuracy', 'information_gain', "
+                "'difficulty_gated_information_gain', 'local_balanced_accuracy', "
+                "'local_corrected_balanced_accuracy', 'local_ba', 'local_cba'}."
+            )
+        if self.utility in {
+            "local_balanced_accuracy",
+            "local_corrected_balanced_accuracy",
+            "local_ba",
+            "local_cba",
+        } and self.base_channel != "global_full":
+            raise ValueError(
+                "local balanced-accuracy utilities require base_channel='global_full'."
             )
         if self.class_prior not in {
             "classifier",
@@ -1627,10 +2095,12 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             "top_m",
             "kernel",
             "evidence_shrunk",
+            "laplace",
         }:
             raise ValueError(
                 "class_prior must be one of "
-                "{'classifier', 'uniform', 'top_m', 'kernel', 'evidence_shrunk'}."
+                "{'classifier', 'uniform', 'top_m', 'kernel', "
+                "'evidence_shrunk', 'laplace'}."
             )
         if self.class_prior == "top_m":
             if self.top_m is None:
@@ -1650,10 +2120,15 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             self.class_prior_evidence_weight,
             eps=self.eps,
         )
-        if self.observed_class_prior not in {"classifier", "kernel", "evidence_shrunk"}:
+        if self.observed_class_prior not in {
+            "classifier",
+            "kernel",
+            "evidence_shrunk",
+            "laplace",
+        }:
             raise ValueError(
                 "observed_class_prior must be one of "
-                "{'classifier', 'kernel', 'evidence_shrunk'}."
+                "{'classifier', 'kernel', 'evidence_shrunk', 'laplace'}."
             )
         if self.observed_class_prior_support not in {"observed", "prior", "evidence"}:
             raise ValueError(
@@ -1670,12 +2145,20 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             )
         if (
             self.observed_class_prior_leave_one_out
-            and self.observed_class_prior not in {"kernel", "evidence_shrunk"}
+            and self.observed_class_prior not in {"kernel", "evidence_shrunk", "laplace"}
         ):
             raise ValueError(
                 "observed_class_prior_leave_one_out=True requires observed_class_prior "
-                "in {'kernel', 'evidence_shrunk'}."
+                "in {'kernel', 'evidence_shrunk', 'laplace'}."
             )
+        if self.laplace_prior_precision <= 0:
+            raise ValueError("laplace_prior_precision must be > 0.")
+        if self.laplace_predictive_samples <= 0:
+            raise ValueError("laplace_predictive_samples must be > 0.")
+        if self.laplace_variance_scale < 0:
+            raise ValueError("laplace_variance_scale must be >= 0.")
+        if self.difficulty_gate_power <= 0:
+            raise ValueError("difficulty_gate_power must be > 0.")
         if self.bandwidth_reference not in {"labeled", "all"}:
             raise ValueError("bandwidth_reference must be one of {'labeled', 'all'}.")
         if self.bandwidth_reference_sample is not None:
@@ -1697,10 +2180,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             raise ValueError("n_mc_samples must be >= 0.")
         if (self.sample_class_prior or self.sample_channel) and self.n_mc_samples <= 0:
             raise ValueError("Sampling requires n_mc_samples > 0.")
-        if self.sample_class_prior and self.class_prior not in {"kernel", "evidence_shrunk"}:
+        if self.sample_class_prior and self.class_prior not in {
+            "kernel",
+            "evidence_shrunk",
+            "laplace",
+        }:
             raise ValueError(
                 "sample_class_prior=True requires class_prior in "
-                "{'kernel', 'evidence_shrunk'}."
+                "{'kernel', 'evidence_shrunk', 'laplace'}."
             )
         if self.sample_channel and self.posterior == "base_only":
             raise ValueError("sample_channel=True requires a posterior distribution.")
@@ -1734,6 +2221,12 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.last_candidate_class_prior_ = None
         self.last_class_prior_ = None
         self.last_class_prior_alpha_ = None
+        self.last_class_prior_laplace_logits_ = None
+        self.last_class_prior_laplace_logit_variance_ = None
+        self.last_observed_laplace_logit_variance_ = None
+        self._last_class_prior_laplace_logits = None
+        self._last_class_prior_laplace_logit_variance = None
+        self._last_observed_laplace_logit_variance = None
         self.last_prior_mask_ = None
         self.last_evidence_mask_ = None
         self.last_prior_observations_ = None
@@ -1744,6 +2237,13 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.last_utility_lcb_ = None
         self.last_utility_ucb_ = None
         self.last_utility_draws_ = None
+        self.last_instance_difficulty_gate_ = None
+        self.last_local_class_accuracy_ = None
+        self.last_local_balanced_accuracy_ = None
+        self.last_local_corrected_balanced_accuracy_ = None
+        self.last_local_balanced_total_ = None
+        self.last_local_balanced_correct_ = None
+        self._last_local_balanced_accuracy_result = None
 
     def _compute(
         self,
@@ -1811,11 +2311,22 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         if self.class_prior == "top_m" and not (1 <= int(self.top_m) <= K):
             raise ValueError("top_m must be in [1, n_classes].")
         missing_label = self._resolve_missing_label(clf)
-        P_all, sample_embeddings, annotator_embeddings = self._predict_probabilities_and_embeddings(
+        (
+            P_all,
+            sample_embeddings,
+            annotator_embeddings,
+            logits_all,
+        ) = self._predict_probabilities_and_embeddings(
             X=X,
             clf=clf,
             need_sample_embeddings=self._needs_sample_embeddings(),
             need_annotator_embeddings=self.use_annotator_embeddings,
+            need_logits=self._needs_logits(),
+        )
+        P_balanced_accuracy = _normalize_axis(
+            np.clip(P_all, 0.0, 1.0),
+            axis=1,
+            eps=self.eps,
         )
         P_all = _normalize_axis(np.clip(P_all, self.eps, 1.0), axis=1, eps=self.eps)
         y_idx = _labels_to_indices(y, classes, missing_label=missing_label)
@@ -1836,6 +2347,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         )
         P_channel = self._resolve_observed_class_probabilities(
             P=P_all,
+            logits=logits_all,
             sample_embeddings=sample_embeddings,
             gamma_reference_embeddings=gamma_reference_embeddings,
             prior_mask=prior_mask_resolved,
@@ -1843,13 +2355,20 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             observed_mask=observed_mask,
             n_classes=K,
         )
+        observed_laplace_logit_variance = self._last_observed_laplace_logit_variance
         weights = _compute_evidence_weights(P_channel, self.evidence_weight, eps=self.eps)
         annotator_similarity = self._resolve_annotator_similarity(
             annotator_embeddings,
             n_annotators=y.shape[1],
         )
+        self._last_local_balanced_accuracy_result = None
+        P_base = (
+            P_balanced_accuracy
+            if self.base_channel == "local_balanced_accuracy"
+            else P_channel
+        )
         B, base_mace_params, base_accuracy_params = self._estimate_base_channel(
-            P=P_channel,
+            P=P_base,
             y_idx=y_idx,
             prior_mask=prior_mask_resolved,
             weights=weights,
@@ -1860,6 +2379,17 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             n_annotators=y.shape[1],
             n_classes=K,
             annotator_similarity=annotator_similarity,
+        )
+        local_ba_result = self._compute_local_balanced_accuracy_result(
+            P=P_balanced_accuracy,
+            y_idx=y_idx,
+            evidence_mask=evidence_mask_resolved,
+            sample_embeddings=sample_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
+            sample_indices=sample_indices,
+            annotator_indices=annotator_indices,
+            B=B,
+            n_classes=K,
         )
         evidence_counts = self._compute_evidence_counts(
             P=P_channel,
@@ -1885,6 +2415,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         )
         p, class_alpha = self._resolve_candidate_class_prior(
             P=P_all,
+            logits=logits_all,
             sample_embeddings=sample_embeddings,
             gamma_reference_embeddings=gamma_reference_embeddings,
             sample_indices=sample_indices,
@@ -1892,6 +2423,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             observed_mask=observed_mask,
             n_classes=K,
         )
+        class_laplace_logits = self._last_class_prior_laplace_logits
+        class_laplace_logit_variance = self._last_class_prior_laplace_logit_variance
         uses_same = np.array_equal(prior_mask_resolved, evidence_mask_resolved)
         result = ChannelEstimationResult(
             base_channel=B,
@@ -1912,6 +2445,26 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             observed_class_proba=P_channel,
             class_prior=p,
             class_prior_alpha=class_alpha,
+            class_prior_laplace_logits=class_laplace_logits,
+            class_prior_laplace_logit_variance=class_laplace_logit_variance,
+            observed_laplace_logit_variance=observed_laplace_logit_variance,
+            local_class_accuracy=(
+                None if local_ba_result is None else local_ba_result.theta
+            ),
+            local_balanced_accuracy=(
+                None if local_ba_result is None else local_ba_result.balanced_accuracy
+            ),
+            local_corrected_balanced_accuracy=(
+                None
+                if local_ba_result is None
+                else local_ba_result.corrected_balanced_accuracy
+            ),
+            local_balanced_total=(
+                None if local_ba_result is None else local_ba_result.total
+            ),
+            local_balanced_correct=(
+                None if local_ba_result is None else local_ba_result.correct
+            ),
             prior_mask=prior_mask_resolved,
             evidence_mask=evidence_mask_resolved,
             prior_observations=self.prior_observations,
@@ -1930,14 +2483,32 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         return (
             self.base_channel == "local_mace"
             or self.base_channel == "local_accuracy_uniform"
+            or self.base_channel == "local_balanced_accuracy"
             or self.evidence in {
                 "local_kernel_soft_counts",
                 "local_kernel_mace_counts",
                 "local_kernel_accuracy_counts",
+                "local_kernel_balanced_accuracy_counts",
             }
-            or self.class_prior in {"kernel", "evidence_shrunk"}
-            or self.observed_class_prior in {"kernel", "evidence_shrunk"}
+            or self.class_prior in {"kernel", "evidence_shrunk", "laplace"}
+            or self.observed_class_prior in {"kernel", "evidence_shrunk", "laplace"}
+            or self._uses_local_balanced_accuracy_utility()
+            or self._uses_local_balanced_accuracy_posterior()
         )
+
+    def _needs_logits(self) -> bool:
+        return self.class_prior == "laplace" or self.observed_class_prior == "laplace"
+
+    def _uses_local_balanced_accuracy_utility(self) -> bool:
+        return self.utility in {
+            "local_balanced_accuracy",
+            "local_corrected_balanced_accuracy",
+            "local_ba",
+            "local_cba",
+        }
+
+    def _uses_local_balanced_accuracy_posterior(self) -> bool:
+        return self.posterior == "local_balanced_accuracy"
 
     def _resolve_bandwidth_reference_embeddings(
         self,
@@ -1979,8 +2550,11 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         clf,
         need_sample_embeddings: bool,
         need_annotator_embeddings: bool,
+        need_logits: bool,
     ):
         extra = []
+        if need_logits:
+            extra.append("logits")
         if need_sample_embeddings and self.embedding_source == "classifier":
             extra.append("embeddings")
         if need_annotator_embeddings:
@@ -1996,6 +2570,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             named = {}
         if P.ndim != 2:
             raise ValueError(f"Classifier probabilities must be 2D, got {P.shape}.")
+        logits = None
+        if need_logits:
+            logits = np.asarray(named["logits"], dtype=float)
+            if logits.shape != P.shape:
+                raise ValueError(
+                    "Classifier logits must have the same shape as probabilities; "
+                    f"got {logits.shape} and {P.shape}."
+                )
         sample_embeddings = None
         if need_sample_embeddings:
             if self.embedding_source == "classifier":
@@ -2007,7 +2589,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         if need_annotator_embeddings:
             annotator_embeddings = np.asarray(named["annotator_embeddings"], dtype=float)
             annotator_embeddings = annotator_embeddings.reshape(annotator_embeddings.shape[0], -1)
-        return P, sample_embeddings, annotator_embeddings
+        return P, sample_embeddings, annotator_embeddings, logits
 
     def _resolve_prior_evidence_masks(
         self,
@@ -2169,6 +2751,44 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
     ]:
         if self.base_channel == "uniform":
             return _estimate_base_uniform(n_annotators, n_classes), None, None
+        if self.base_channel == "fixed_full":
+            return _fixed_full_channel(
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                eps=self.eps,
+            ), None, None
+        if self.base_channel == "fixed_mace":
+            params = _fixed_mace_parameters(
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+            )
+            return (
+                _mace_channel_from_theta_g(
+                    params.theta,
+                    params.g,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                params,
+                None,
+            )
+        if self.base_channel == "fixed_accuracy_uniform":
+            params = _fixed_accuracy_uniform_parameters(
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+            )
+            return (
+                _accuracy_uniform_channel_from_theta(
+                    params.theta,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                None,
+                params,
+            )
         if self.base_channel == "global_mace":
             params = _estimate_global_mace_parameters(
                 P,
@@ -2177,8 +2797,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 weights,
                 n_annotators=n_annotators,
                 n_classes=n_classes,
-                theta_prior=self.mace_theta_prior,
-                bias_prior=self.mace_bias_prior,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                fixed_prior_strength=self.fixed_prior_strength,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2205,8 +2825,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 annotator_indices=annotator_indices,
                 n_annotators=n_annotators,
                 n_classes=n_classes,
-                theta_prior=self.mace_theta_prior,
-                bias_prior=self.mace_bias_prior,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                fixed_prior_strength=self.fixed_prior_strength,
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
@@ -2232,7 +2852,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 prior_mask,
                 weights,
                 n_annotators=n_annotators,
-                theta_prior=self.mace_theta_prior,
+                n_classes=n_classes,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                fixed_prior_strength=self.fixed_prior_strength,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2257,7 +2879,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 candidate_indices=sample_indices,
                 annotator_indices=annotator_indices,
                 n_annotators=n_annotators,
-                theta_prior=self.mace_theta_prior,
+                n_classes=n_classes,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                fixed_prior_strength=self.fixed_prior_strength,
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
@@ -2274,6 +2898,52 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 ),
                 None,
                 params,
+            )
+        if self.base_channel == "local_balanced_accuracy":
+            if sample_embeddings is None:
+                raise ValueError(
+                    "base_channel='local_balanced_accuracy' requires sample embeddings."
+                )
+            B_prior = _estimate_base_global_full(
+                P,
+                y_idx,
+                prior_mask,
+                weights,
+                n_annotators=n_annotators,
+                n_classes=n_classes,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                fixed_prior_strength=self.fixed_prior_strength,
+                eps=self.eps,
+            )
+            prior_diag = np.diagonal(B_prior, axis1=1, axis2=2)[
+                np.asarray(annotator_indices, dtype=int)
+            ]
+            result = _compute_local_kernel_balanced_accuracy(
+                P,
+                y_idx,
+                prior_mask,
+                sample_embeddings=sample_embeddings,
+                candidate_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                prior_diag=prior_diag,
+                prior_strength=self.prior_strength,
+                n_classes=n_classes,
+                kernel=self.kernel,
+                gamma=self.gamma,
+                normalize_embeddings=self.normalize_embeddings,
+                gamma_reference_embeddings=gamma_reference_embeddings,
+                bandwidth_knn_k=self.bandwidth_knn_k,
+                eps=self.eps,
+            )
+            self._last_local_balanced_accuracy_result = result
+            return (
+                _classwise_accuracy_channel_from_theta(
+                    result.theta,
+                    n_classes=n_classes,
+                    eps=self.eps,
+                ),
+                None,
+                None,
             )
         if self.base_channel == "diag_uniform":
             return _estimate_base_diag_uniform(
@@ -2294,10 +2964,61 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 weights,
                 n_annotators=n_annotators,
                 n_classes=n_classes,
-                alpha0=self.global_full_alpha0,
+                fixed_prior_accuracy=self.fixed_prior_accuracy,
+                fixed_prior_strength=self.fixed_prior_strength,
                 eps=self.eps,
             ), None, None
         raise RuntimeError("unreachable base_channel")
+
+    def _compute_local_balanced_accuracy_result(
+        self,
+        *,
+        P,
+        y_idx,
+        evidence_mask,
+        sample_embeddings,
+        gamma_reference_embeddings,
+        sample_indices,
+        annotator_indices,
+        B,
+        n_classes,
+    ) -> LocalBalancedAccuracyResult | None:
+        if self._last_local_balanced_accuracy_result is not None:
+            return self._last_local_balanced_accuracy_result
+        if not (
+            self._uses_local_balanced_accuracy_utility()
+            or self._uses_local_balanced_accuracy_posterior()
+        ):
+            return None
+        if sample_embeddings is None:
+            raise ValueError("local balanced-accuracy utilities require sample embeddings.")
+        B = np.asarray(B, dtype=float)
+        if B.ndim != 3:
+            raise ValueError(
+                "local balanced-accuracy utilities require a global full confusion prior."
+            )
+        prior_diag = np.diagonal(B, axis1=1, axis2=2)[
+            np.asarray(annotator_indices, dtype=int)
+        ]
+        result = _compute_local_kernel_balanced_accuracy(
+            P,
+            y_idx,
+            evidence_mask,
+            sample_embeddings=sample_embeddings,
+            candidate_indices=sample_indices,
+            annotator_indices=annotator_indices,
+            prior_diag=prior_diag,
+            prior_strength=self.prior_strength,
+            n_classes=n_classes,
+            kernel=self.kernel,
+            gamma=self.gamma,
+            normalize_embeddings=self.normalize_embeddings,
+            gamma_reference_embeddings=gamma_reference_embeddings,
+            bandwidth_knn_k=self.bandwidth_knn_k,
+            eps=self.eps,
+        )
+        self._last_local_balanced_accuracy_result = result
+        return result
 
     def _compute_evidence_counts(
         self,
@@ -2407,6 +3128,13 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
+        if self.evidence == "local_kernel_balanced_accuracy_counts":
+            if self._last_local_balanced_accuracy_result is None:
+                raise ValueError(
+                    "local_kernel_balanced_accuracy_counts requires a computed "
+                    "local balanced-accuracy result."
+                )
+            return self._last_local_balanced_accuracy_result
         raise RuntimeError("unreachable evidence")
 
     def _combine_posterior(
@@ -2468,7 +3196,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return C, alpha, None, None
         if self.posterior == "global_mace":
             if base_mace_params is None:
-                raise ValueError("posterior='global_mace' requires a MACE base channel.")
+                if self.base_channel != "global_full":
+                    raise ValueError("posterior='global_mace' requires a MACE base channel.")
+                base_mace_params = _full_channel_to_mace_params(B, eps=self.eps)
             C, mace_params = _combine_mace_global(
                 base_mace_params,
                 evidence_counts,
@@ -2481,7 +3211,9 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return C, None, mace_params, None
         if self.posterior == "local_mace":
             if base_mace_params is None:
-                raise ValueError("posterior='local_mace' requires a MACE base channel.")
+                if self.base_channel != "global_full":
+                    raise ValueError("posterior='local_mace' requires a MACE base channel.")
+                base_mace_params = _full_channel_to_mace_params(B, eps=self.eps)
             C, mace_params = _combine_mace_local(
                 base_mace_params,
                 evidence_counts,
@@ -2494,8 +3226,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return C, None, mace_params, None
         if self.posterior == "global_accuracy_uniform":
             if base_accuracy_params is None:
-                raise ValueError(
-                    "posterior='global_accuracy_uniform' requires an accuracy-uniform base channel."
+                if self.base_channel not in {"uniform", "global_full"}:
+                    raise ValueError(
+                        "posterior='global_accuracy_uniform' requires an "
+                        "accuracy-uniform base channel."
+                    )
+                base_accuracy_params = _full_channel_to_accuracy_uniform_params(
+                    B,
+                    eps=self.eps,
                 )
             C, accuracy_params = _combine_accuracy_uniform_global(
                 base_accuracy_params,
@@ -2509,8 +3247,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return C, None, None, accuracy_params
         if self.posterior == "local_accuracy_uniform":
             if base_accuracy_params is None:
-                raise ValueError(
-                    "posterior='local_accuracy_uniform' requires an accuracy-uniform base channel."
+                if self.base_channel not in {"uniform", "global_full"}:
+                    raise ValueError(
+                        "posterior='local_accuracy_uniform' requires an "
+                        "accuracy-uniform base channel."
+                    )
+                base_accuracy_params = _full_channel_to_accuracy_uniform_params(
+                    B,
+                    eps=self.eps,
                 )
             C, accuracy_params = _combine_accuracy_uniform_local(
                 base_accuracy_params,
@@ -2522,6 +3266,17 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 eps=self.eps,
             )
             return C, None, None, accuracy_params
+        if self.posterior == "local_balanced_accuracy":
+            if not isinstance(evidence_counts, LocalBalancedAccuracyResult):
+                raise ValueError(
+                    "posterior='local_balanced_accuracy' requires local balanced-accuracy evidence."
+                )
+            C = _classwise_accuracy_channel_from_theta(
+                evidence_counts.theta,
+                n_classes=n_classes,
+                eps=self.eps,
+            )
+            return C, None, None, None
         raise RuntimeError("unreachable posterior")
 
     def _observation_support_mask(
@@ -2539,10 +3294,113 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return evidence_mask.any(axis=1)
         raise RuntimeError("unreachable observed_class_prior_support")
 
+    @staticmethod
+    def laplace_mean_field_predictive_proba(
+        *,
+        support_logits,
+        support_embeddings,
+        query_logits,
+        query_embeddings,
+        prior_precision: float = 1.0,
+        include_bias: bool = True,
+        predictive_samples: int = 32,
+        variance_scale: float = 1.0,
+        query_support_indices=None,
+        random_state=None,
+        eps: float = 1e-12,
+    ) -> LaplacePredictiveResult:
+        support_logits = np.asarray(support_logits, dtype=float)
+        query_logits = np.asarray(query_logits, dtype=float)
+        support_embeddings = np.asarray(support_embeddings, dtype=float)
+        query_embeddings = np.asarray(query_embeddings, dtype=float)
+        prior_precision = float(prior_precision)
+        predictive_samples = int(predictive_samples)
+        variance_scale = float(variance_scale)
+        if support_logits.ndim != 2 or query_logits.ndim != 2:
+            raise ValueError("support_logits and query_logits must be 2D arrays.")
+        if support_embeddings.ndim != 2 or query_embeddings.ndim != 2:
+            raise ValueError("support_embeddings and query_embeddings must be 2D arrays.")
+        if support_logits.shape[1] != query_logits.shape[1]:
+            raise ValueError("support_logits and query_logits must agree on n_classes.")
+        if support_embeddings.shape[1] != query_embeddings.shape[1]:
+            raise ValueError(
+                "support_embeddings and query_embeddings must have the same feature dimension."
+            )
+        if support_logits.shape[0] != support_embeddings.shape[0]:
+            raise ValueError("support logits and embeddings must have the same n_samples.")
+        if query_logits.shape[0] != query_embeddings.shape[0]:
+            raise ValueError("query logits and embeddings must have the same n_samples.")
+        if prior_precision <= 0:
+            raise ValueError("prior_precision must be > 0.")
+        if predictive_samples <= 0:
+            raise ValueError("predictive_samples must be > 0.")
+        if variance_scale < 0:
+            raise ValueError("variance_scale must be >= 0.")
+
+        K = query_logits.shape[1]
+        D = query_embeddings.shape[1]
+        if support_logits.shape[0] == 0:
+            precision = np.full((K, D), prior_precision, dtype=float)
+            bias_precision = np.full(K, prior_precision, dtype=float)
+            curvature = np.empty((0, K), dtype=float)
+        else:
+            p_support = _softmax_logits(support_logits, axis=1)
+            curvature = p_support * (1.0 - p_support)
+            precision = prior_precision + curvature.T @ (support_embeddings ** 2)
+            bias_precision = prior_precision + curvature.sum(axis=0)
+        precision = np.maximum(precision, eps)
+        bias_precision = np.maximum(bias_precision, eps)
+
+        query_z2 = query_embeddings ** 2
+        if query_support_indices is None:
+            logit_variance = query_z2 @ (1.0 / precision).T
+            if include_bias:
+                logit_variance += 1.0 / bias_precision[None, :]
+        else:
+            query_support_indices = np.asarray(query_support_indices, dtype=int)
+            if query_support_indices.shape != (query_logits.shape[0],):
+                raise ValueError("query_support_indices must have shape (n_query,).")
+            logit_variance = np.empty((query_logits.shape[0], K), dtype=float)
+            for i, support_row in enumerate(query_support_indices):
+                precision_i = precision
+                bias_precision_i = bias_precision
+                if support_row >= 0:
+                    if support_row >= support_logits.shape[0]:
+                        raise ValueError("query_support_indices contains an out-of-bounds row.")
+                    precision_i = precision - (
+                        curvature[support_row, :, None]
+                        * (support_embeddings[support_row][None, :] ** 2)
+                    )
+                    precision_i = np.maximum(precision_i, eps)
+                    if include_bias:
+                        bias_precision_i = np.maximum(
+                            bias_precision - curvature[support_row],
+                            eps,
+                        )
+                logit_variance[i] = query_z2[i] @ (1.0 / precision_i).T
+                if include_bias:
+                    logit_variance[i] += 1.0 / bias_precision_i
+        logit_variance = variance_scale * np.maximum(logit_variance, 0.0)
+
+        rng = check_random_state(random_state)
+        noise = rng.normal(
+            loc=0.0,
+            scale=np.sqrt(logit_variance)[None, :, :],
+            size=(predictive_samples, query_logits.shape[0], K),
+        )
+        samples = _softmax_logits(query_logits[None, :, :] + noise, axis=-1)
+        proba = _normalize_axis(samples.mean(axis=0), axis=1, eps=eps)
+        return LaplacePredictiveResult(
+            proba=proba,
+            logit_variance=logit_variance,
+            samples=samples,
+        )
+
     def _resolve_observed_class_probabilities(
         self,
         *,
         P,
+        logits,
         sample_embeddings,
         gamma_reference_embeddings,
         prior_mask,
@@ -2550,6 +3408,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         observed_mask,
         n_classes,
     ) -> np.ndarray:
+        self._last_observed_laplace_logit_variance = None
         if self.observed_class_prior == "classifier":
             return P.copy()
         if self.observed_class_prior == "kernel":
@@ -2629,12 +3488,49 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 evidence_strength = Kx.T @ eta[support]
             alpha = alpha0[None, :] + evidence_strength[:, None] * P
             return _normalize_axis(alpha, axis=1, eps=self.eps)
+        if self.observed_class_prior == "laplace":
+            if sample_embeddings is None:
+                raise ValueError("observed_class_prior='laplace' requires sample embeddings.")
+            if logits is None:
+                raise ValueError("observed_class_prior='laplace' requires classifier logits.")
+            support_mask = self._observation_support_mask(
+                prior_mask=prior_mask,
+                evidence_mask=evidence_mask,
+                observed_mask=observed_mask,
+            )
+            support = np.flatnonzero(support_mask)
+            if support.size == 0:
+                self._last_observed_laplace_logit_variance = np.zeros_like(P, dtype=float)
+                return P.copy()
+            query_support_rows = None
+            if self.observed_class_prior_leave_one_out:
+                support_to_row = {sample_id: row for row, sample_id in enumerate(support)}
+                query_support_rows = np.asarray(
+                    [support_to_row.get(sample_id, -1) for sample_id in range(P.shape[0])],
+                    dtype=int,
+                )
+            laplace = self.laplace_mean_field_predictive_proba(
+                support_logits=logits[support],
+                support_embeddings=sample_embeddings[support],
+                query_logits=logits,
+                query_embeddings=sample_embeddings,
+                prior_precision=self.laplace_prior_precision,
+                include_bias=self.laplace_include_bias,
+                predictive_samples=self.laplace_predictive_samples,
+                variance_scale=self.laplace_variance_scale,
+                query_support_indices=query_support_rows,
+                random_state=self.random_state,
+                eps=self.eps,
+            )
+            self._last_observed_laplace_logit_variance = laplace.logit_variance
+            return laplace.proba
         raise RuntimeError("unreachable observed_class_prior")
 
     def _resolve_candidate_class_prior(
         self,
         *,
         P,
+        logits,
         sample_embeddings,
         gamma_reference_embeddings,
         sample_indices,
@@ -2642,6 +3538,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         observed_mask,
         n_classes,
     ) -> tuple[np.ndarray, np.ndarray | None]:
+        self._last_class_prior_laplace_logits = None
+        self._last_class_prior_laplace_logit_variance = None
         P_cand = P[sample_indices]
         if self.class_prior == "classifier":
             return P_cand, None
@@ -2712,9 +3610,57 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 evidence_strength = Kx.T @ eta[support]
             alpha = alpha0[None, :] + evidence_strength[:, None] * P_cand
             return _normalize_axis(alpha, axis=1, eps=self.eps), alpha
+        if self.class_prior == "laplace":
+            if sample_embeddings is None:
+                raise ValueError("class_prior='laplace' requires sample embeddings.")
+            if logits is None:
+                raise ValueError("class_prior='laplace' requires classifier logits.")
+            support_mask = (
+                evidence_mask.any(axis=1)
+                if self.class_prior_support == "evidence"
+                else observed_mask.any(axis=1)
+            )
+            support = np.flatnonzero(support_mask)
+            if support.size == 0:
+                self._last_class_prior_laplace_logits = logits[sample_indices].copy()
+                self._last_class_prior_laplace_logit_variance = np.zeros_like(
+                    P_cand,
+                    dtype=float,
+                )
+                return P_cand, None
+            laplace = self.laplace_mean_field_predictive_proba(
+                support_logits=logits[support],
+                support_embeddings=sample_embeddings[support],
+                query_logits=logits[sample_indices],
+                query_embeddings=sample_embeddings[sample_indices],
+                prior_precision=self.laplace_prior_precision,
+                include_bias=self.laplace_include_bias,
+                predictive_samples=self.laplace_predictive_samples,
+                variance_scale=self.laplace_variance_scale,
+                random_state=self.random_state,
+                eps=self.eps,
+            )
+            self._last_class_prior_laplace_logits = logits[sample_indices].copy()
+            self._last_class_prior_laplace_logit_variance = laplace.logit_variance
+            return laplace.proba, None
         raise RuntimeError("unreachable class_prior")
 
     def _utilities_from_result(self, result: ChannelEstimationResult) -> np.ndarray:
+        if self._uses_local_balanced_accuracy_utility():
+            if self.utility in {"local_balanced_accuracy", "local_ba"}:
+                utilities = result.local_balanced_accuracy
+            else:
+                utilities = result.local_corrected_balanced_accuracy
+            if utilities is None:
+                raise ValueError("Local balanced-accuracy utility was not computed.")
+            utilities = np.asarray(utilities, dtype=float)
+            self.last_utility_mean_ = utilities
+            self.last_utility_std_ = np.zeros_like(utilities, dtype=float)
+            self.last_utility_lcb_ = None
+            self.last_utility_ucb_ = None
+            self.last_utility_draws_ = None
+            self.last_instance_difficulty_gate_ = None
+            return utilities
         rng = np.random.default_rng(self.random_state.randint(0, 2**32 - 1))
         n_draws = (
             self.n_mc_samples
@@ -2733,7 +3679,10 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             p = result.class_prior
             C = result.posterior_channel
             if self.sample_class_prior:
-                p = self._sample_dirichlet_rows(result.class_prior_alpha, rng)
+                if self.class_prior == "laplace":
+                    p = self._sample_laplace_class_prior(result, rng)
+                else:
+                    p = self._sample_dirichlet_rows(result.class_prior_alpha, rng)
             if self.sample_channel:
                 if result.posterior_mace_params is not None:
                     C = self._sample_mace_channel(
@@ -2746,6 +3695,12 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                         rng,
                         n_classes=C.shape[-1],
                     )
+                elif isinstance(result.evidence_counts, LocalBalancedAccuracyResult):
+                    C = self._sample_local_balanced_accuracy_channel(
+                        result.evidence_counts,
+                        rng,
+                        n_classes=C.shape[-1],
+                    )
                 else:
                     C = self._sample_dirichlet_rows(result.posterior_alpha, rng)
             draws[t] = self._compute_utility(p, C)
@@ -2754,6 +3709,15 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.last_utility_lcb_ = np.quantile(draws, 0.05, axis=0) if n_draws > 1 else None
         self.last_utility_ucb_ = np.quantile(draws, 0.95, axis=0) if n_draws > 1 else None
         self.last_utility_draws_ = draws if self.store_utility_draws else None
+        self.last_instance_difficulty_gate_ = (
+            _compute_instance_difficulty_gate(
+                result.class_prior,
+                power=self.difficulty_gate_power,
+                eps=self.eps,
+            )
+            if self.utility == "difficulty_gated_information_gain"
+            else None
+        )
         if self.utility_aggregation == "quantile":
             return np.quantile(draws, self.utility_quantile, axis=0)
         return self.last_utility_mean_
@@ -2765,6 +3729,13 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             return _compute_bias_corrected_accuracy(p, C, eps=self.eps)
         if self.utility == "information_gain":
             return _compute_information_gain(p, C, eps=self.eps)
+        if self.utility == "difficulty_gated_information_gain":
+            return _compute_difficulty_gated_information_gain(
+                p,
+                C,
+                power=self.difficulty_gate_power,
+                eps=self.eps,
+            )
         raise RuntimeError("unreachable utility")
 
     def _sample_dirichlet_rows(self, alpha: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -2773,6 +3744,52 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         alpha = np.clip(np.asarray(alpha, dtype=float), self.eps, None)
         samples = rng.gamma(shape=alpha, scale=1.0)
         return _normalize_axis(samples, axis=-1, eps=self.eps)
+
+    def _sample_laplace_class_prior(
+        self,
+        result: ChannelEstimationResult,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        if (
+            result.class_prior_laplace_logits is None
+            or result.class_prior_laplace_logit_variance is None
+        ):
+            raise ValueError("Cannot sample Laplace class prior without stored logit moments.")
+        logits = np.asarray(result.class_prior_laplace_logits, dtype=float)
+        variance = np.asarray(result.class_prior_laplace_logit_variance, dtype=float)
+        noise = rng.normal(
+            loc=0.0,
+            scale=np.sqrt(np.maximum(variance, 0.0)),
+            size=logits.shape,
+        )
+        return _softmax_logits(logits + noise, axis=1)
+
+    def _sample_local_balanced_accuracy_channel(
+        self,
+        evidence: LocalBalancedAccuracyResult,
+        rng: np.random.Generator,
+        *,
+        n_classes: int,
+    ) -> np.ndarray:
+        prior_diag = np.asarray(evidence.prior_diag, dtype=float)
+        alpha = (
+            self.prior_strength * prior_diag[None, :, :]
+            + np.asarray(evidence.correct, dtype=float)
+        )
+        beta = (
+            self.prior_strength * (1.0 - prior_diag)[None, :, :]
+            + np.asarray(evidence.total, dtype=float)
+            - np.asarray(evidence.correct, dtype=float)
+        )
+        theta = rng.beta(
+            np.clip(alpha, self.eps, None),
+            np.clip(beta, self.eps, None),
+        )
+        return _classwise_accuracy_channel_from_theta(
+            theta,
+            n_classes=n_classes,
+            eps=self.eps,
+        )
 
     def _sample_mace_channel(
         self,
@@ -2864,6 +3881,18 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.last_candidate_class_prior_ = result.class_prior
         self.last_class_prior_ = result.class_prior
         self.last_class_prior_alpha_ = result.class_prior_alpha
+        self.last_class_prior_laplace_logits_ = result.class_prior_laplace_logits
+        self.last_class_prior_laplace_logit_variance_ = (
+            result.class_prior_laplace_logit_variance
+        )
+        self.last_observed_laplace_logit_variance_ = result.observed_laplace_logit_variance
+        self.last_local_class_accuracy_ = result.local_class_accuracy
+        self.last_local_balanced_accuracy_ = result.local_balanced_accuracy
+        self.last_local_corrected_balanced_accuracy_ = (
+            result.local_corrected_balanced_accuracy
+        )
+        self.last_local_balanced_total_ = result.local_balanced_total
+        self.last_local_balanced_correct_ = result.local_balanced_correct
         self.last_prior_mask_ = result.prior_mask
         self.last_evidence_mask_ = result.evidence_mask
         self.last_prior_observations_ = result.prior_observations
