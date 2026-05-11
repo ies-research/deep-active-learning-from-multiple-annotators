@@ -1,7 +1,7 @@
 _target_: src.scorer.KernelSmoothedBayesianAnnotatorGainNew
 
-preset: local_accuracy_uniform_fixed_prior
-utility: information_gain
+preset: global_accuracy_uniform_fixed_prior
+utility: bias_corrected_accuracy
 class_prior: classifier
 class_prior_kernel: rbf
 class_prior_gamma: self_tuning
@@ -23,7 +23,16 @@ kernel: rbf
 gamma: self_tuning
 bandwidth_reference: all
 bandwidth_reference_sample: 2000
-bandwidth_knn_k: 100
+bandwidth_knn_k: 500
+local_kernel_top_k: null
+local_kernel_weighting: constant
+budget_aware_locality: false
+budget_T0: 20.0
+budget_rho: 0.1
+budget_k_min: 30
+budget_k_max: 100000
+budget_s_min: 1.0
+budget_s_max: 50.0
 embedding_source: classifier
 normalize_embeddings: true
 use_annotator_embeddings: false
@@ -31,9 +40,9 @@ annotator_kernel: rbf
 annotator_gamma: self_tuning
 fixed_prior_accuracy: 0.9
 fixed_prior_strength: 1.0
-prior_strength: 5.0
+prior_strength: 2
 prior_observations: same
-n_mc_samples: 5
+n_mc_samples: 10
 sample_class_prior: false
 sample_channel: true
 utility_aggregation: mean

@@ -164,6 +164,7 @@ class ChannelEstimationResult:
     local_corrected_balanced_accuracy: np.ndarray | None
     local_balanced_total: np.ndarray | None
     local_balanced_correct: np.ndarray | None
+    budget_aware_locality: "BudgetAwareLocalityResult | None"
     prior_mask: np.ndarray
     evidence_mask: np.ndarray
     prior_observations: str
@@ -180,6 +181,14 @@ class LaplacePredictiveResult:
 
 
 @dataclass
+class BudgetAwareLocalityResult:
+    k_t: int
+    k_final: int
+    s_local: float
+    diagnostics: dict
+
+
+@dataclass
 class LocalBalancedAccuracyResult:
     theta: np.ndarray
     balanced_accuracy: np.ndarray
@@ -187,6 +196,7 @@ class LocalBalancedAccuracyResult:
     total: np.ndarray
     correct: np.ndarray
     prior_diag: np.ndarray
+    prior_strength: float
 
 
 @dataclass
@@ -425,6 +435,130 @@ def _pairwise_kernel(
     raise ValueError("kernel must be one of {'rbf', 'cosine'}.")
 
 
+def _apply_top_k_sample_support(
+    Kx: np.ndarray,
+    source_indices: np.ndarray,
+    top_k: int | None,
+    weighting: str = "kernel",
+) -> np.ndarray:
+    weighting = str(weighting).lower()
+    if weighting not in {"kernel", "constant"}:
+        raise ValueError("local_kernel_weighting must be one of {'kernel', 'constant'}.")
+    Kx = np.asarray(Kx, dtype=float)
+    source_indices = np.asarray(source_indices, dtype=int)
+    if Kx.ndim != 2:
+        raise ValueError("Kx must be a 2D kernel matrix.")
+    if source_indices.shape != (Kx.shape[0],):
+        raise ValueError("source_indices must have one entry per kernel row.")
+    if Kx.shape[0] == 0 or Kx.shape[1] == 0:
+        return Kx
+    if top_k is None:
+        return np.ones_like(Kx, dtype=float) if weighting == "constant" else Kx
+    top_k = int(top_k)
+    if top_k <= 0:
+        raise ValueError("local_kernel_top_k must be > 0.")
+    unique_source, inverse = np.unique(source_indices, return_inverse=True)
+    n_unique = unique_source.size
+    if top_k >= n_unique:
+        return np.ones_like(Kx, dtype=float) if weighting == "constant" else Kx
+    scores = np.full((n_unique, Kx.shape[1]), -np.inf, dtype=float)
+    np.maximum.at(scores, inverse, Kx)
+    keep_unique = np.zeros_like(scores, dtype=bool)
+    kth = n_unique - top_k
+    for j in range(Kx.shape[1]):
+        keep = np.argpartition(scores[:, j], kth=kth)[kth:]
+        keep_unique[keep, j] = True
+    keep_rows = keep_unique[inverse]
+    if weighting == "constant":
+        return keep_rows.astype(float)
+    return Kx * keep_rows
+
+
+def compute_budget_aware_k_and_prior_strength(
+    N,
+    M,
+    B_total,
+    B_t,
+    T0=10,
+    rho=1.0,
+    k_min=20,
+    k_max=500,
+    s_min=5,
+    s_max=50,
+    actual_local_evidence=None,
+    eps=1e-12,
+) -> BudgetAwareLocalityResult:
+    N = int(N)
+    M = int(M)
+    B_total = float(B_total)
+    B_t = float(B_t)
+    T0 = float(T0)
+    rho = float(rho)
+    k_min = int(k_min)
+    k_max = int(k_max)
+    s_min = float(s_min)
+    s_max = float(s_max)
+    eps = float(eps)
+    if N <= 0:
+        raise ValueError("N must be > 0.")
+    if M <= 0:
+        raise ValueError("M must be > 0.")
+    if B_total <= 0:
+        raise ValueError("B_total must be > 0.")
+    if B_t < 0:
+        raise ValueError("B_t must be >= 0.")
+    if T0 <= 0:
+        raise ValueError("T0 must be > 0.")
+    if rho < 0:
+        raise ValueError("rho must be >= 0.")
+    if k_min <= 0 or k_max <= 0:
+        raise ValueError("k_min and k_max must be > 0.")
+    if k_min > k_max:
+        raise ValueError("k_min must be <= k_max.")
+    if s_min < 0 or s_max < 0:
+        raise ValueError("s_min and s_max must be >= 0.")
+    if s_min > s_max:
+        raise ValueError("s_min must be <= s_max.")
+
+    evidence_scale = T0 * N * M
+    k_final_raw = int(np.ceil(evidence_scale / max(B_total, eps)))
+    k_current_raw = int(np.ceil(evidence_scale / max(B_t, eps)))
+    k_upper = min(k_max, N)
+    lower = min(max(k_final_raw, k_min), k_upper)
+    k_t = int(np.clip(k_current_raw, lower, k_upper))
+    k_final = int(np.clip(k_final_raw, 1, k_upper))
+    T_expected_t = float(k_t * B_t / max(N * M, eps))
+
+    prior_source = "expected"
+    T_ref_t = T_expected_t
+    if actual_local_evidence is not None:
+        evidence = np.asarray(actual_local_evidence, dtype=float)
+        valid = evidence[np.isfinite(evidence) & (evidence >= 0.0)]
+        if valid.size > 0:
+            T_ref_t = float(np.median(valid))
+            prior_source = "actual"
+    s_local = float(np.clip(rho * T_ref_t, s_min, s_max))
+    feasibility_ratio = float(k_final_raw / max(N, eps))
+    diagnostics = {
+        "T_expected_t": T_expected_t,
+        "T_ref_t": float(T_ref_t),
+        "prior_source": prior_source,
+        "k_final_raw": int(k_final_raw),
+        "k_current_raw": int(k_current_raw),
+        "k_final_over_N": feasibility_ratio,
+        "k_t_over_N": float(k_t / max(N, eps)),
+        "k_t_clipped_lower": bool(k_t > k_current_raw),
+        "k_t_clipped_upper": bool(k_t < k_current_raw),
+        "local_modeling_feasible": bool(feasibility_ratio <= 0.2),
+    }
+    return BudgetAwareLocalityResult(
+        k_t=k_t,
+        k_final=k_final,
+        s_local=s_local,
+        diagnostics=diagnostics,
+    )
+
+
 def _compute_evidence_weights(
     P: np.ndarray,
     method: str,
@@ -608,6 +742,8 @@ def _compute_local_kernel_soft_counts(
     normalize_embeddings: bool,
     gamma_reference_embeddings: np.ndarray | None = None,
     bandwidth_knn_k: int = 10,
+    local_kernel_top_k: int | None = None,
+    local_kernel_weighting: str = "kernel",
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> np.ndarray:
@@ -631,6 +767,7 @@ def _compute_local_kernel_soft_counts(
         bandwidth_knn_k=bandwidth_knn_k,
         eps=eps,
     )
+    Kx = _apply_top_k_sample_support(Kx, obs_s, local_kernel_top_k, local_kernel_weighting)
     if annotator_similarity is not None:
         annotator_similarity = np.asarray(annotator_similarity, dtype=float)
         if annotator_similarity.shape != (n_annotators, n_annotators):
@@ -670,6 +807,8 @@ def _compute_local_kernel_balanced_accuracy(
     normalize_embeddings: bool,
     gamma_reference_embeddings: np.ndarray | None = None,
     bandwidth_knn_k: int = 10,
+    local_kernel_top_k: int | None = None,
+    local_kernel_weighting: str = "kernel",
     eps: float = 1e-12,
 ) -> LocalBalancedAccuracyResult:
     candidate_indices = np.asarray(candidate_indices, dtype=int)
@@ -699,6 +838,7 @@ def _compute_local_kernel_balanced_accuracy(
             bandwidth_knn_k=bandwidth_knn_k,
             eps=eps,
         )
+        Kx = _apply_top_k_sample_support(Kx, obs_s, local_kernel_top_k, local_kernel_weighting)
         for j, target_m in enumerate(annotator_indices):
             take_annotator = obs_a == target_m
             if not np.any(take_annotator):
@@ -725,6 +865,7 @@ def _compute_local_kernel_balanced_accuracy(
         total=total,
         correct=correct,
         prior_diag=prior_diag,
+        prior_strength=float(prior_strength),
     )
 
 
@@ -873,6 +1014,8 @@ def _compute_local_kernel_accuracy_counts(
     normalize_embeddings: bool,
     gamma_reference_embeddings: np.ndarray | None = None,
     bandwidth_knn_k: int = 10,
+    local_kernel_top_k: int | None = None,
+    local_kernel_weighting: str = "kernel",
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> AccuracyEvidenceCounts:
@@ -896,6 +1039,7 @@ def _compute_local_kernel_accuracy_counts(
         bandwidth_knn_k=bandwidth_knn_k,
         eps=eps,
     )
+    Kx = _apply_top_k_sample_support(Kx, obs_s, local_kernel_top_k, local_kernel_weighting)
     if annotator_similarity is not None:
         annotator_similarity = np.asarray(annotator_similarity, dtype=float)
         if annotator_similarity.shape != (n_annotators, n_annotators):
@@ -979,6 +1123,8 @@ def _estimate_local_accuracy_uniform_parameters(
     normalize_embeddings: bool,
     gamma_reference_embeddings: np.ndarray | None = None,
     bandwidth_knn_k: int = 10,
+    local_kernel_top_k: int | None = None,
+    local_kernel_weighting: str = "kernel",
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> AccuracyUniformChannelParameters:
@@ -998,6 +1144,8 @@ def _estimate_local_accuracy_uniform_parameters(
         normalize_embeddings=normalize_embeddings,
         gamma_reference_embeddings=gamma_reference_embeddings,
         bandwidth_knn_k=bandwidth_knn_k,
+        local_kernel_top_k=local_kernel_top_k,
+        local_kernel_weighting=local_kernel_weighting,
         annotator_similarity=annotator_similarity,
         eps=eps,
     )
@@ -1069,6 +1217,8 @@ def _compute_local_kernel_mace_counts(
     normalize_embeddings: bool,
     gamma_reference_embeddings: np.ndarray | None = None,
     bandwidth_knn_k: int = 10,
+    local_kernel_top_k: int | None = None,
+    local_kernel_weighting: str = "kernel",
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> MaceEvidenceCounts:
@@ -1093,6 +1243,7 @@ def _compute_local_kernel_mace_counts(
         bandwidth_knn_k=bandwidth_knn_k,
         eps=eps,
     )
+    Kx = _apply_top_k_sample_support(Kx, obs_s, local_kernel_top_k, local_kernel_weighting)
     if annotator_similarity is not None:
         annotator_similarity = np.asarray(annotator_similarity, dtype=float)
         if annotator_similarity.shape != (n_annotators, n_annotators):
@@ -1197,6 +1348,8 @@ def _estimate_local_mace_parameters(
     normalize_embeddings: bool,
     gamma_reference_embeddings: np.ndarray | None = None,
     bandwidth_knn_k: int = 10,
+    local_kernel_top_k: int | None = None,
+    local_kernel_weighting: str = "kernel",
     annotator_similarity: np.ndarray | None = None,
     eps: float = 1e-12,
 ) -> MaceChannelParameters:
@@ -1219,6 +1372,8 @@ def _estimate_local_mace_parameters(
         normalize_embeddings=normalize_embeddings,
         gamma_reference_embeddings=gamma_reference_embeddings,
         bandwidth_knn_k=bandwidth_knn_k,
+        local_kernel_top_k=local_kernel_top_k,
+        local_kernel_weighting=local_kernel_weighting,
         annotator_similarity=annotator_similarity,
         eps=eps,
     )
@@ -1774,6 +1929,16 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         bandwidth_reference: str | int | float = "labeled",
         bandwidth_reference_sample: int | float | None = None,
         bandwidth_knn_k: int = 10,
+        local_kernel_top_k: int | None = None,
+        local_kernel_weighting: str = "kernel",
+        budget_aware_locality: bool = False,
+        budget_total: int | float | None = None,
+        budget_T0: float = 10.0,
+        budget_rho: float = 1.0,
+        budget_k_min: int = 20,
+        budget_k_max: int = 500,
+        budget_s_min: float = 5.0,
+        budget_s_max: float = 50.0,
         embedding_source: str = "classifier",
         normalize_embeddings: bool = True,
         use_annotator_embeddings: bool = False,
@@ -1842,6 +2007,18 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.bandwidth_reference = str(bandwidth_reference)
         self.bandwidth_reference_sample = bandwidth_reference_sample
         self.bandwidth_knn_k = int(bandwidth_knn_k)
+        self.local_kernel_top_k = (
+            None if local_kernel_top_k is None else int(local_kernel_top_k)
+        )
+        self.local_kernel_weighting = str(local_kernel_weighting)
+        self.budget_aware_locality = bool(budget_aware_locality)
+        self.budget_total = None if budget_total is None else float(budget_total)
+        self.budget_T0 = float(budget_T0)
+        self.budget_rho = float(budget_rho)
+        self.budget_k_min = int(budget_k_min)
+        self.budget_k_max = int(budget_k_max)
+        self.budget_s_min = float(budget_s_min)
+        self.budget_s_max = float(budget_s_max)
         self.embedding_source = str(embedding_source)
         self.normalize_embeddings = bool(normalize_embeddings)
         self.use_annotator_embeddings = bool(use_annotator_embeddings)
@@ -2174,6 +2351,26 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                     raise ValueError("bandwidth_reference_sample float must be in (0, 1].")
         if self.bandwidth_knn_k <= 0:
             raise ValueError("bandwidth_knn_k must be > 0.")
+        if self.local_kernel_top_k is not None and self.local_kernel_top_k <= 0:
+            raise ValueError("local_kernel_top_k must be None or > 0.")
+        if self.local_kernel_weighting not in {"kernel", "constant"}:
+            raise ValueError("local_kernel_weighting must be one of {'kernel', 'constant'}.")
+        if self.budget_aware_locality:
+            if self.budget_total is not None and self.budget_total <= 0:
+                raise ValueError("budget_total must be None or > 0.")
+            compute_budget_aware_k_and_prior_strength(
+                N=1,
+                M=1,
+                B_total=1.0 if self.budget_total is None else self.budget_total,
+                B_t=1.0,
+                T0=self.budget_T0,
+                rho=self.budget_rho,
+                k_min=self.budget_k_min,
+                k_max=self.budget_k_max,
+                s_min=self.budget_s_min,
+                s_max=self.budget_s_max,
+                eps=self.eps,
+            )
         if self.embedding_source not in {"classifier", "input"}:
             raise ValueError("embedding_source must be one of {'classifier', 'input'}.")
         if self.n_mc_samples < 0:
@@ -2243,7 +2440,14 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self.last_local_corrected_balanced_accuracy_ = None
         self.last_local_balanced_total_ = None
         self.last_local_balanced_correct_ = None
+        self.last_budget_aware_locality_ = None
+        self.last_local_kernel_top_k_ = None
+        self.last_local_kernel_weighting_ = None
+        self.last_local_prior_strength_ = None
         self._last_local_balanced_accuracy_result = None
+        self._runtime_budget_aware_locality = None
+        self._runtime_local_kernel_top_k = self.local_kernel_top_k
+        self._runtime_local_prior_strength = self.prior_strength
 
     def _compute(
         self,
@@ -2269,6 +2473,54 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         self._store_result_diagnostics(result, utilities)
         return utilities
 
+    def _configure_budget_aware_locality(
+        self,
+        *,
+        y,
+        observed_mask,
+        budget_total=None,
+        budget_used=None,
+    ) -> BudgetAwareLocalityResult | None:
+        self._runtime_budget_aware_locality = None
+        self._runtime_local_kernel_top_k = self.local_kernel_top_k
+        self._runtime_local_prior_strength = self.prior_strength
+        if not self.budget_aware_locality:
+            return None
+        resolved_budget_total = self.budget_total if budget_total is None else float(budget_total)
+        if resolved_budget_total is None:
+            raise ValueError(
+                "budget_aware_locality=True requires budget_total in the scorer config "
+                "or as a runtime scorer argument."
+            )
+        resolved_budget_used = (
+            float(np.count_nonzero(observed_mask))
+            if budget_used is None
+            else float(budget_used)
+        )
+        result = compute_budget_aware_k_and_prior_strength(
+            N=y.shape[0],
+            M=y.shape[1],
+            B_total=resolved_budget_total,
+            B_t=resolved_budget_used,
+            T0=self.budget_T0,
+            rho=self.budget_rho,
+            k_min=self.budget_k_min,
+            k_max=self.budget_k_max,
+            s_min=self.budget_s_min,
+            s_max=self.budget_s_max,
+            eps=self.eps,
+        )
+        self._runtime_budget_aware_locality = result
+        self._runtime_local_kernel_top_k = result.k_t
+        self._runtime_local_prior_strength = result.s_local
+        return result
+
+    def _local_kernel_top_k(self) -> int | None:
+        return self._runtime_local_kernel_top_k
+
+    def _local_prior_strength(self) -> float:
+        return float(self._runtime_local_prior_strength)
+
     def estimate_channels(
         self,
         *,
@@ -2284,6 +2536,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         evidence_mask=None,
         initial_observation_mask=None,
         rng=None,
+        budget_total=None,
+        budget_used=None,
         **kwargs,
     ) -> ChannelEstimationResult:
         if clf is None:
@@ -2341,6 +2595,12 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             initial_observation_mask=initial_observation_mask,
         )
         observed_mask = _make_observation_mask(y, missing_label=missing_label)
+        budget_aware_result = self._configure_budget_aware_locality(
+            y=y,
+            observed_mask=observed_mask,
+            budget_total=budget_total,
+            budget_used=budget_used,
+        )
         gamma_reference_embeddings = self._resolve_bandwidth_reference_embeddings(
             sample_embeddings=sample_embeddings,
             observed_mask=observed_mask,
@@ -2465,6 +2725,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             local_balanced_correct=(
                 None if local_ba_result is None else local_ba_result.correct
             ),
+            budget_aware_locality=budget_aware_result,
             prior_mask=prior_mask_resolved,
             evidence_mask=evidence_mask_resolved,
             prior_observations=self.prior_observations,
@@ -2832,6 +3093,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 normalize_embeddings=self.normalize_embeddings,
                 gamma_reference_embeddings=gamma_reference_embeddings,
                 bandwidth_knn_k=self.bandwidth_knn_k,
+                local_kernel_top_k=self._local_kernel_top_k(),
+                local_kernel_weighting=self.local_kernel_weighting,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2887,6 +3150,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 normalize_embeddings=self.normalize_embeddings,
                 gamma_reference_embeddings=gamma_reference_embeddings,
                 bandwidth_knn_k=self.bandwidth_knn_k,
+                local_kernel_top_k=self._local_kernel_top_k(),
+                local_kernel_weighting=self.local_kernel_weighting,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -2926,13 +3191,15 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 candidate_indices=sample_indices,
                 annotator_indices=annotator_indices,
                 prior_diag=prior_diag,
-                prior_strength=self.prior_strength,
+                prior_strength=self._local_prior_strength(),
                 n_classes=n_classes,
                 kernel=self.kernel,
                 gamma=self.gamma,
                 normalize_embeddings=self.normalize_embeddings,
                 gamma_reference_embeddings=gamma_reference_embeddings,
                 bandwidth_knn_k=self.bandwidth_knn_k,
+                local_kernel_top_k=self._local_kernel_top_k(),
+                local_kernel_weighting=self.local_kernel_weighting,
                 eps=self.eps,
             )
             self._last_local_balanced_accuracy_result = result
@@ -3008,13 +3275,15 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             candidate_indices=sample_indices,
             annotator_indices=annotator_indices,
             prior_diag=prior_diag,
-            prior_strength=self.prior_strength,
+            prior_strength=self._local_prior_strength(),
             n_classes=n_classes,
             kernel=self.kernel,
             gamma=self.gamma,
             normalize_embeddings=self.normalize_embeddings,
             gamma_reference_embeddings=gamma_reference_embeddings,
             bandwidth_knn_k=self.bandwidth_knn_k,
+            local_kernel_top_k=self._local_kernel_top_k(),
+            local_kernel_weighting=self.local_kernel_weighting,
             eps=self.eps,
         )
         self._last_local_balanced_accuracy_result = result
@@ -3065,6 +3334,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 normalize_embeddings=self.normalize_embeddings,
                 gamma_reference_embeddings=gamma_reference_embeddings,
                 bandwidth_knn_k=self.bandwidth_knn_k,
+                local_kernel_top_k=self._local_kernel_top_k(),
+                local_kernel_weighting=self.local_kernel_weighting,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -3096,6 +3367,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 normalize_embeddings=self.normalize_embeddings,
                 gamma_reference_embeddings=gamma_reference_embeddings,
                 bandwidth_knn_k=self.bandwidth_knn_k,
+                local_kernel_top_k=self._local_kernel_top_k(),
+                local_kernel_weighting=self.local_kernel_weighting,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -3125,6 +3398,8 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
                 normalize_embeddings=self.normalize_embeddings,
                 gamma_reference_embeddings=gamma_reference_embeddings,
                 bandwidth_knn_k=self.bandwidth_knn_k,
+                local_kernel_top_k=self._local_kernel_top_k(),
+                local_kernel_weighting=self.local_kernel_weighting,
                 annotator_similarity=annotator_similarity,
                 eps=self.eps,
             )
@@ -3189,7 +3464,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             C, alpha = _combine_dirichlet_local(
                 B,
                 evidence_counts,
-                prior_strength=self.prior_strength,
+                prior_strength=self._local_prior_strength(),
                 annotator_indices=annotator_indices,
                 eps=self.eps,
             )
@@ -3217,7 +3492,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             C, mace_params = _combine_mace_local(
                 base_mace_params,
                 evidence_counts,
-                prior_strength=self.prior_strength,
+                prior_strength=self._local_prior_strength(),
                 n_candidates=len(sample_indices),
                 annotator_indices=annotator_indices,
                 n_classes=n_classes,
@@ -3259,7 +3534,7 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             C, accuracy_params = _combine_accuracy_uniform_local(
                 base_accuracy_params,
                 evidence_counts,
-                prior_strength=self.prior_strength,
+                prior_strength=self._local_prior_strength(),
                 n_candidates=len(sample_indices),
                 annotator_indices=annotator_indices,
                 n_classes=n_classes,
@@ -3278,6 +3553,10 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
             )
             return C, None, None, None
         raise RuntimeError("unreachable posterior")
+
+    @staticmethod
+    def compute_budget_aware_k_and_prior_strength(**kwargs) -> BudgetAwareLocalityResult:
+        return compute_budget_aware_k_and_prior_strength(**kwargs)
 
     def _observation_support_mask(
         self,
@@ -3772,12 +4051,13 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         n_classes: int,
     ) -> np.ndarray:
         prior_diag = np.asarray(evidence.prior_diag, dtype=float)
+        prior_strength = float(evidence.prior_strength)
         alpha = (
-            self.prior_strength * prior_diag[None, :, :]
+            prior_strength * prior_diag[None, :, :]
             + np.asarray(evidence.correct, dtype=float)
         )
         beta = (
-            self.prior_strength * (1.0 - prior_diag)[None, :, :]
+            prior_strength * (1.0 - prior_diag)[None, :, :]
             + np.asarray(evidence.total, dtype=float)
             - np.asarray(evidence.correct, dtype=float)
         )
@@ -3893,6 +4173,10 @@ class KernelSmoothedBayesianAnnotatorGainNew(PairScorer):
         )
         self.last_local_balanced_total_ = result.local_balanced_total
         self.last_local_balanced_correct_ = result.local_balanced_correct
+        self.last_budget_aware_locality_ = result.budget_aware_locality
+        self.last_local_kernel_top_k_ = self._local_kernel_top_k()
+        self.last_local_kernel_weighting_ = self.local_kernel_weighting
+        self.last_local_prior_strength_ = self._local_prior_strength()
         self.last_prior_mask_ = result.prior_mask
         self.last_evidence_mask_ = result.evidence_mask
         self.last_prior_observations_ = result.prior_observations
