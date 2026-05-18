@@ -1,0 +1,12 @@
+_target_: src.scorer.BudgetAwareLocalAgreementScorer
+score_mode: thompson
+thompson_samples: 10
+bias_model_correction: none
+locality_mode: local 
+base_prior_strength: 1.0
+pool_prior_scale: 1.0
+local_prior_scale: 1.0
+local_prior_min: 1.0
+normalize_embeddings: true
+metric: euclidean
+random_state: ${seed}
