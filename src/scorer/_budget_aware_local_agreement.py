@@ -43,10 +43,30 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         annotator.
     locality_mode : {"local", "global"}, default="local"
         Controls whether responsive agreement is candidate-local. ``"local"``
-        uses budget-aware kNN evidence around each candidate and shrinks it
-        toward the annotator-global prior. ``"global"`` disables kNN evidence and
-        broadcasts each annotator's global responsive posterior to all candidate
-        samples.
+        uses budget-aware local evidence around each candidate and shrinks it
+        toward the annotator-global prior. ``"global"`` disables local evidence
+        and broadcasts each annotator's global responsive posterior to all
+        candidate samples.
+    responsive_combination : {"prior", "gated"}, default="prior"
+        How local and global responsive estimates are combined in local mode.
+        ``"prior"`` encodes the global estimate as a local Beta prior.
+        ``"gated"`` samples independent global and local Beta posteriors and
+        combines them with an explicit local-trust gate. In global locality mode,
+        this parameter is ignored.
+    gated_thompson_mode : {"weighted_average", "mixture_sample"}, default="weighted_average"
+        How gated global/local posteriors are sampled when
+        ``score_mode="thompson"`` and ``responsive_combination="gated"``.
+        ``"weighted_average"`` preserves the existing convex combination of
+        global and local draws. ``"mixture_sample"`` samples a Bernoulli
+        global/local model indicator from the local-trust gate for each draw.
+    local_evidence_mode : {"knn", "kernel"}, default="knn"
+        How local agreement evidence is accumulated in local mode. ``"knn"``
+        uses the existing uniform kNN evidence. ``"kernel"`` uses RBF-weighted
+        evidence with a full-dataset kth-neighbor bandwidth.
+    local_kernel_bandwidth_mode : {"full_kth"}, default="full_kth"
+        Bandwidth rule for ``local_evidence_mode="kernel"``. ``"full_kth"``
+        defines locality by the candidate's kth nearest full-dataset neighbor,
+        using annotator-observed kth distance only as a coverage diagnostic.
     base_prior_strength : float, default=1.0
         Total pseudo-count strength of the chance-level base prior. The prior
         mean is ``1 / n_classes``.
@@ -56,10 +76,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         ``pool_prior_scale * k_star[m]``.
     local_prior_scale : float, default=1.0
         Multiplier for the annotator-global-to-local prior strength in local
-        mode. The base local strength is proportional to
-        ``local_prior_scale * min(k_star[m], G_m)`` before radius correction.
+        mode when ``responsive_combination="prior"``. The base local strength is
+        proportional to ``local_prior_scale * min(k_star[m], G_m)`` before radius
+        correction.
     local_prior_min : float, default=1.0
-        Minimum annotator-global-to-local prior strength in local mode.
+        Minimum annotator-global-to-local prior strength in local mode when
+        ``responsive_combination="prior"``.
     normalize_embeddings : bool, default=False
         Whether to L2-normalize classifier embeddings before distance
         computations.
@@ -90,6 +112,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         thompson_samples: int = 1,
         bias_model_correction: str = "none",
         locality_mode: str = "local",
+        responsive_combination: str = "prior",
+        gated_thompson_mode: str = "weighted_average",
+        local_evidence_mode: str = "knn",
+        local_kernel_bandwidth_mode: str = "full_kth",
         base_prior_strength: float = 1.0,
         pool_prior_scale: float = 1.0,
         local_prior_scale: float = 1.0,
@@ -112,6 +138,19 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             )
         if locality_mode not in {"local", "global"}:
             raise ValueError("locality_mode must be one of {'local', 'global'}.")
+        if responsive_combination not in {"prior", "gated"}:
+            raise ValueError(
+                "responsive_combination must be one of {'prior', 'gated'}."
+            )
+        if gated_thompson_mode not in {"weighted_average", "mixture_sample"}:
+            raise ValueError(
+                "gated_thompson_mode must be one of "
+                "{'weighted_average', 'mixture_sample'}."
+            )
+        if local_evidence_mode not in {"knn", "kernel"}:
+            raise ValueError("local_evidence_mode must be one of {'knn', 'kernel'}.")
+        if local_kernel_bandwidth_mode not in {"full_kth"}:
+            raise ValueError("local_kernel_bandwidth_mode must be 'full_kth'.")
         if base_prior_strength <= 0:
             raise ValueError("base_prior_strength must be positive.")
         if pool_prior_scale < 0:
@@ -127,6 +166,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.thompson_samples = int(thompson_samples)
         self.bias_model_correction = str(bias_model_correction)
         self.locality_mode = str(locality_mode)
+        self.responsive_combination = str(responsive_combination)
+        self.gated_thompson_mode = str(gated_thompson_mode)
+        self.local_evidence_mode = str(local_evidence_mode)
+        self.local_kernel_bandwidth_mode = str(local_kernel_bandwidth_mode)
         self.base_prior_strength = float(base_prior_strength)
         self.pool_prior_scale = float(pool_prior_scale)
         self.local_prior_scale = float(local_prior_scale)
@@ -223,17 +266,31 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 confidence=confidence,
                 k_star=k_star,
             )
-            nu = global_prior["nu_base"][annotator_indices][None, :] * np.maximum(
-                1.0, local["rho"]
-            )
-            alpha = (
-                nu * global_prior["mu_global"][annotator_indices][None, :]
-                + local["success"]
-            )
-            beta = (
-                nu * (1.0 - global_prior["mu_global"][annotator_indices][None, :])
-                + local["failure"]
-            )
+            if self.responsive_combination == "prior":
+                nu = global_prior["nu_base"][annotator_indices][None, :] * np.maximum(
+                    1.0, local["rho"]
+                )
+                alpha = (
+                    nu * global_prior["mu_global"][annotator_indices][None, :]
+                    + local["success"]
+                )
+                beta = (
+                    nu * (1.0 - global_prior["mu_global"][annotator_indices][None, :])
+                    + local["failure"]
+                )
+                responsive = None
+            else:
+                responsive = self._gated_responsive_posterior(
+                    local=local,
+                    global_prior=global_prior,
+                    annotator_indices=annotator_indices,
+                    k_star=k_star,
+                    alpha0=alpha0,
+                    beta0=beta0,
+                )
+                alpha = responsive["alpha_local"]
+                beta = responsive["beta_local"]
+                nu = np.full_like(responsive["lambda_local"], np.nan, dtype=float)
         else:
             local = self._empty_local_diagnostics(n_sel_s, n_sel_a)
             nu = np.broadcast_to(
@@ -248,7 +305,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 global_prior["beta_global"][annotator_indices][None, :],
                 (n_sel_s, n_sel_a),
             ).copy()
+            responsive = None
         raw_score = alpha / np.maximum(alpha + beta, self.eps)
+        if responsive is not None:
+            raw_score = responsive["mean"]
 
         bias = None
         if self.bias_model_correction == "model_average":
@@ -271,6 +331,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             P_candidates=P[sample_indices],
             annotator_indices=annotator_indices,
             bias=bias,
+            responsive=responsive,
         )
 
         feasible = ~observed_mask[np.ix_(sample_indices, annotator_indices)]
@@ -286,6 +347,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             local=local,
             nu=nu,
             global_prior=global_prior,
+            responsive=responsive,
             bias=bias,
         )
         return utilities
@@ -424,6 +486,60 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             "k_local": np.zeros((n_sel_s, n_sel_a), dtype=int),
         }
 
+    @staticmethod
+    def _kth_finite_distance(distances: np.ndarray, k: int) -> float:
+        finite = np.asarray(distances, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if int(k) <= 0 or finite.size == 0:
+            return np.nan
+        kth = min(int(k), finite.size)
+        return float(np.partition(finite, kth - 1)[kth - 1])
+
+    def _gated_responsive_posterior(
+        self,
+        *,
+        local: dict[str, np.ndarray],
+        global_prior: dict[str, np.ndarray | float],
+        annotator_indices: np.ndarray,
+        k_star: np.ndarray,
+        alpha0: float,
+        beta0: float,
+    ) -> dict[str, np.ndarray]:
+        alpha_global = np.broadcast_to(
+            global_prior["alpha_global"][annotator_indices][None, :],
+            local["success"].shape,
+        ).copy()
+        beta_global = np.broadcast_to(
+            global_prior["beta_global"][annotator_indices][None, :],
+            local["success"].shape,
+        ).copy()
+        alpha_local = alpha0 + local["success"]
+        beta_local = beta0 + local["failure"]
+        local_mass = local["success"] + local["failure"]
+        k_target = np.broadcast_to(
+            k_star[annotator_indices][None, :],
+            local_mass.shape,
+        ).astype(float)
+        mass_gate = np.divide(
+            local_mass,
+            local_mass + k_target,
+            out=np.zeros_like(local_mass, dtype=float),
+            where=(local_mass + k_target) > self.eps,
+        )
+        radius_gate = np.minimum(1.0, 1.0 / np.maximum(local["rho"], self.eps))
+        lambda_local = np.clip(mass_gate * radius_gate, 0.0, 1.0)
+        mean_global = alpha_global / np.maximum(alpha_global + beta_global, self.eps)
+        mean_local = alpha_local / np.maximum(alpha_local + beta_local, self.eps)
+        mean = (1.0 - lambda_local) * mean_global + lambda_local * mean_local
+        return {
+            "alpha_global": alpha_global,
+            "beta_global": beta_global,
+            "alpha_local": alpha_local,
+            "beta_local": beta_local,
+            "lambda_local": lambda_local,
+            "mean": mean,
+        }
+
     def _local_evidence(
         self,
         *,
@@ -436,6 +552,17 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         confidence: np.ndarray,
         k_star: np.ndarray,
     ) -> dict[str, np.ndarray]:
+        if self.local_evidence_mode == "kernel":
+            return self._kernel_local_evidence(
+                E=E,
+                sample_indices=sample_indices,
+                annotator_indices=annotator_indices,
+                observed_mask=observed_mask,
+                success=success,
+                failure=failure,
+                k_star=k_star,
+            )
+
         n_sel_s = len(sample_indices)
         n_sel_a = len(annotator_indices)
         out = {
@@ -518,6 +645,91 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                     out["neighbor_confidence"][row, local_j, sl] = confidence[neighbors]
         return out
 
+    def _kernel_local_evidence(
+        self,
+        *,
+        E: np.ndarray,
+        sample_indices: np.ndarray,
+        annotator_indices: np.ndarray,
+        observed_mask: np.ndarray,
+        success: np.ndarray,
+        failure: np.ndarray,
+        k_star: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        n_sel_s = len(sample_indices)
+        n_sel_a = len(annotator_indices)
+        out = {
+            "success": np.zeros((n_sel_s, n_sel_a), dtype=float),
+            "failure": np.zeros((n_sel_s, n_sel_a), dtype=float),
+            "h_actual": np.full((n_sel_s, n_sel_a), np.nan, dtype=float),
+            "h_ref": np.full((n_sel_s, n_sel_a), np.nan, dtype=float),
+            "rho": np.ones((n_sel_s, n_sel_a), dtype=float),
+            "k_local": np.zeros((n_sel_s, n_sel_a), dtype=int),
+            "kernel_bandwidth": np.full((n_sel_s, n_sel_a), np.nan, dtype=float),
+            "kernel_weight_sum": np.zeros((n_sel_s, n_sel_a), dtype=float),
+        }
+
+        full_dist = pairwise_distances(E[sample_indices], E, metric=self.metric)
+        if self.exclude_self:
+            for row, sample_index in enumerate(sample_indices):
+                if 0 <= sample_index < E.shape[0]:
+                    full_dist[row, sample_index] = np.inf
+
+        max_full_k = max(E.shape[0] - 1, 1)
+        for local_j, annotator_index in enumerate(annotator_indices):
+            obs_idx = np.flatnonzero(observed_mask[:, annotator_index])
+            if obs_idx.size == 0:
+                continue
+
+            k_full = int(np.clip(k_star[annotator_index], 1, max_full_k))
+            for row in range(n_sel_s):
+                out["h_ref"][row, local_j] = self._kth_finite_distance(
+                    full_dist[row],
+                    k_full,
+                )
+            out["kernel_bandwidth"][:, local_j] = out["h_ref"][:, local_j]
+
+            d_obs = pairwise_distances(
+                E[sample_indices], E[obs_idx], metric=self.metric
+            )
+            if self.exclude_self:
+                for row, sample_index in enumerate(sample_indices):
+                    pos = np.flatnonzero(obs_idx == sample_index)
+                    if pos.size:
+                        d_obs[row, pos[0]] = np.inf
+
+            for row in range(n_sel_s):
+                finite = np.flatnonzero(np.isfinite(d_obs[row]))
+                row_k = min(int(k_star[annotator_index]), finite.size)
+                if row_k <= 0:
+                    continue
+
+                out["k_local"][row, local_j] = row_k
+                out["h_actual"][row, local_j] = self._kth_finite_distance(
+                    d_obs[row],
+                    row_k,
+                )
+                sigma = out["h_ref"][row, local_j]
+                if np.isfinite(sigma):
+                    out["rho"][row, local_j] = out["h_actual"][row, local_j] / (
+                        sigma + self.eps
+                    )
+                if not np.isfinite(sigma):
+                    continue
+
+                sigma = max(float(sigma), self.eps)
+                distances = d_obs[row, finite]
+                weights = np.exp(-0.5 * np.square(distances / sigma))
+                neighbors = obs_idx[finite]
+                out["kernel_weight_sum"][row, local_j] = float(weights.sum())
+                out["success"][row, local_j] = float(
+                    weights @ success[neighbors, annotator_index]
+                )
+                out["failure"][row, local_j] = float(
+                    weights @ failure[neighbors, annotator_index]
+                )
+        return out
+
     def _bias_model(
         self,
         *,
@@ -589,18 +801,20 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         P_candidates: np.ndarray,
         annotator_indices: np.ndarray,
         bias: dict[str, np.ndarray] | None,
+        responsive: dict[str, np.ndarray] | None,
     ) -> np.ndarray:
-        mean = alpha / np.maximum(alpha + beta, self.eps)
+        mean = (
+            responsive["mean"]
+            if responsive is not None
+            else alpha / np.maximum(alpha + beta, self.eps)
+        )
         if self.score_mode == "mean":
             if bias is None:
                 return mean
             p_resp = bias["p_resp"][annotator_indices][None, :]
             return p_resp * mean + (1.0 - p_resp) * bias["bias_score"]
 
-        shape = (self.thompson_samples,) + alpha.shape
-        alpha_draw = np.broadcast_to(alpha, shape)
-        beta_draw = np.broadcast_to(beta, shape)
-        theta = self.random_state.beta(alpha_draw, beta_draw)
+        theta = self._sample_responsive(alpha=alpha, beta=beta, responsive=responsive)
         if bias is None:
             return theta.mean(axis=0)
 
@@ -620,6 +834,32 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             )
         return utility_draws.mean(axis=0)
 
+    def _sample_responsive(
+        self,
+        *,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        responsive: dict[str, np.ndarray] | None,
+    ) -> np.ndarray:
+        shape = (self.thompson_samples,) + alpha.shape
+        if responsive is None:
+            alpha_draw = np.broadcast_to(alpha, shape)
+            beta_draw = np.broadcast_to(beta, shape)
+            return self.random_state.beta(alpha_draw, beta_draw)
+
+        alpha_g = np.broadcast_to(responsive["alpha_global"], shape)
+        beta_g = np.broadcast_to(responsive["beta_global"], shape)
+        alpha_l = np.broadcast_to(responsive["alpha_local"], shape)
+        beta_l = np.broadcast_to(responsive["beta_local"], shape)
+        lambda_l = responsive["lambda_local"][None, :, :]
+        theta_g = self.random_state.beta(alpha_g, beta_g)
+        theta_l = self.random_state.beta(alpha_l, beta_l)
+        if self.gated_thompson_mode == "mixture_sample":
+            p_local = np.broadcast_to(lambda_l, shape)
+            z_local = self.random_state.binomial(1, p_local).astype(bool)
+            return np.where(z_local, theta_l, theta_g)
+        return (1.0 - lambda_l) * theta_g + lambda_l * theta_l
+
     @staticmethod
     def _normalize_probabilities(P: np.ndarray) -> np.ndarray:
         if P.ndim != 2:
@@ -633,6 +873,13 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
     def _entropy_confidence(self, P: np.ndarray) -> np.ndarray:
         safe = np.clip(P, self.eps, 1.0)
         entropy = -np.sum(P * np.log(safe), axis=1)
+        # Partitions array so top two elements are at the end
+        part = np.partition(P, -2, axis=1)
+        # Highest minus second highest
+        margin = part[:, -1] - part[:, -2]
+        # return margin
+        conf = (np.max(P, axis=1) - 1 / P.shape[1]) / (1 - 1 / P.shape[1])
+        return conf
         return np.clip(1.0 - entropy / np.log(P.shape[1]), 0.0, 1.0)
 
     def _store_diagnostics(
@@ -645,6 +892,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         local,
         nu,
         global_prior,
+        responsive,
         bias,
     ) -> None:
         self.last_alpha_ = alpha
@@ -663,6 +911,18 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_alpha_global_ = global_prior["alpha_global"]
         self.last_beta_global_ = global_prior["beta_global"]
         self.last_tau_pool_ = global_prior["tau_pool"]
+        self.last_responsive_combination_ = self.responsive_combination
+        self.last_gated_thompson_mode_ = self.gated_thompson_mode
+        self.last_local_evidence_mode_ = self.local_evidence_mode
+        self.last_local_kernel_bandwidth_ = local.get("kernel_bandwidth")
+        self.last_local_kernel_weight_sum_ = local.get("kernel_weight_sum")
+        self.last_lambda_local_ = (
+            None if responsive is None else responsive["lambda_local"]
+        )
+        self.last_alpha_local_ = (
+            None if responsive is None else responsive["alpha_local"]
+        )
+        self.last_beta_local_ = None if responsive is None else responsive["beta_local"]
         self.last_p_responsive_ = None if bias is None else bias["p_resp"]
         self.last_p_bias_ = None if bias is None else bias["p_bias"]
         self.last_log_likelihood_responsive_ = (
@@ -693,6 +953,14 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_alpha_global_ = None
         self.last_beta_global_ = None
         self.last_tau_pool_ = None
+        self.last_responsive_combination_ = None
+        self.last_gated_thompson_mode_ = None
+        self.last_local_evidence_mode_ = None
+        self.last_local_kernel_bandwidth_ = None
+        self.last_local_kernel_weight_sum_ = None
+        self.last_lambda_local_ = None
+        self.last_alpha_local_ = None
+        self.last_beta_local_ = None
         self.last_p_responsive_ = None
         self.last_p_bias_ = None
         self.last_log_likelihood_responsive_ = None
