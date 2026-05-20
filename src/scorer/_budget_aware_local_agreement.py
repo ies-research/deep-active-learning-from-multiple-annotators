@@ -59,6 +59,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         ``"weighted_average"`` preserves the existing convex combination of
         global and local draws. ``"mixture_sample"`` samples a Bernoulli
         global/local model indicator from the local-trust gate for each draw.
+    evidence_weighting : {"confidence", "entropy", "margin"}, default="confidence"
+        How classifier probabilities are converted into pseudo-label evidence
+        weights. ``"confidence"`` uses normalized top-class probability and
+        preserves the original implementation. ``"entropy"`` penalizes
+        probability mass spread across all classes. ``"margin"`` uses the
+        top-two probability gap.
     local_evidence_mode : {"knn", "kernel"}, default="knn"
         How local agreement evidence is accumulated in local mode. ``"knn"``
         uses the existing uniform kNN evidence. ``"kernel"`` uses RBF-weighted
@@ -67,6 +73,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         Bandwidth rule for ``local_evidence_mode="kernel"``. ``"full_kth"``
         defines locality by the candidate's kth nearest full-dataset neighbor,
         using annotator-observed kth distance only as a coverage diagnostic.
+    use_rho_correction : bool, default=True
+        Whether to use the coverage ratio ``rho`` as a posterior correction.
+        If false, ``rho`` is still computed and stored as a diagnostic, but the
+        responsive posterior uses an effective value of 1 everywhere.
     base_prior_strength : float, default=1.0
         Total pseudo-count strength of the chance-level base prior. The prior
         mean is ``1 / n_classes``.
@@ -114,8 +124,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         locality_mode: str = "local",
         responsive_combination: str = "prior",
         gated_thompson_mode: str = "weighted_average",
+        evidence_weighting: str = "confidence",
         local_evidence_mode: str = "knn",
         local_kernel_bandwidth_mode: str = "full_kth",
+        use_rho_correction: bool = True,
         base_prior_strength: float = 1.0,
         pool_prior_scale: float = 1.0,
         local_prior_scale: float = 1.0,
@@ -147,6 +159,11 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 "gated_thompson_mode must be one of "
                 "{'weighted_average', 'mixture_sample'}."
             )
+        if evidence_weighting not in {"confidence", "entropy", "margin"}:
+            raise ValueError(
+                "evidence_weighting must be one of "
+                "{'confidence', 'entropy', 'margin'}."
+            )
         if local_evidence_mode not in {"knn", "kernel"}:
             raise ValueError("local_evidence_mode must be one of {'knn', 'kernel'}.")
         if local_kernel_bandwidth_mode not in {"full_kth"}:
@@ -168,8 +185,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.locality_mode = str(locality_mode)
         self.responsive_combination = str(responsive_combination)
         self.gated_thompson_mode = str(gated_thompson_mode)
+        self.evidence_weighting = str(evidence_weighting)
         self.local_evidence_mode = str(local_evidence_mode)
         self.local_kernel_bandwidth_mode = str(local_kernel_bandwidth_mode)
+        self.use_rho_correction = bool(use_rho_correction)
         self.base_prior_strength = float(base_prior_strength)
         self.pool_prior_scale = float(pool_prior_scale)
         self.local_prior_scale = float(local_prior_scale)
@@ -233,13 +252,13 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             classes=classes,
         )
         pseudo_labels = np.argmax(P, axis=1)
-        confidence = self._entropy_confidence(P)
+        evidence_weight = self._evidence_weight(P)
 
         success, failure = self._agreement_evidence(
             y_idx=y_idx,
             observed_mask=observed_mask,
             pseudo_labels=pseudo_labels,
-            confidence=confidence,
+            confidence=evidence_weight,
         )
         k_star = self._budget_k_star(
             observed_counts=observed_mask.sum(axis=0),
@@ -263,12 +282,13 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 observed_mask=observed_mask,
                 success=success,
                 failure=failure,
-                confidence=confidence,
+                confidence=evidence_weight,
                 k_star=k_star,
             )
             if self.responsive_combination == "prior":
+                rho_effective = self._effective_rho(local["rho"])
                 nu = global_prior["nu_base"][annotator_indices][None, :] * np.maximum(
-                    1.0, local["rho"]
+                    1.0, rho_effective
                 )
                 alpha = (
                     nu * global_prior["mu_global"][annotator_indices][None, :]
@@ -316,7 +336,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 P=P,
                 y_idx=y_idx,
                 observed_mask=observed_mask,
-                confidence=confidence,
+                confidence=evidence_weight,
                 pseudo_labels=pseudo_labels,
                 n_classes=n_classes,
                 alpha0=alpha0,
@@ -349,6 +369,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             global_prior=global_prior,
             responsive=responsive,
             bias=bias,
+            evidence_weight=evidence_weight,
         )
         return utilities
 
@@ -526,7 +547,9 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             out=np.zeros_like(local_mass, dtype=float),
             where=(local_mass + k_target) > self.eps,
         )
-        radius_gate = np.minimum(1.0, 1.0 / np.maximum(local["rho"], self.eps))
+        radius_gate = np.minimum(
+            1.0, 1.0 / np.maximum(self._effective_rho(local["rho"]), self.eps)
+        )
         lambda_local = np.clip(mass_gate * radius_gate, 0.0, 1.0)
         mean_global = alpha_global / np.maximum(alpha_global + beta_global, self.eps)
         mean_local = alpha_local / np.maximum(alpha_local + beta_local, self.eps)
@@ -870,17 +893,25 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             raise ValueError("classifier probabilities must have positive row sums.")
         return P / row_sum
 
-    def _entropy_confidence(self, P: np.ndarray) -> np.ndarray:
-        safe = np.clip(P, self.eps, 1.0)
-        entropy = -np.sum(P * np.log(safe), axis=1)
-        # Partitions array so top two elements are at the end
-        part = np.partition(P, -2, axis=1)
-        # Highest minus second highest
-        margin = part[:, -1] - part[:, -2]
-        # return margin
-        conf = (np.max(P, axis=1) - 1 / P.shape[1]) / (1 - 1 / P.shape[1])
-        return conf
-        return np.clip(1.0 - entropy / np.log(P.shape[1]), 0.0, 1.0)
+    def _evidence_weight(self, P: np.ndarray) -> np.ndarray:
+        n_classes = P.shape[1]
+        if self.evidence_weighting == "confidence":
+            p_max = np.max(P, axis=1)
+            chance = 1.0 / n_classes
+            q = (p_max - chance) / (1.0 - chance)
+        elif self.evidence_weighting == "entropy":
+            safe = np.clip(P, self.eps, 1.0)
+            entropy = -np.sum(P * np.log(safe), axis=1)
+            q = 1.0 - entropy / np.log(n_classes)
+        else:
+            part = np.partition(P, -2, axis=1)
+            q = part[:, -1] - part[:, -2]
+        return np.clip(q, 0.0, 1.0)
+
+    def _effective_rho(self, rho: np.ndarray) -> np.ndarray:
+        if self.use_rho_correction:
+            return rho
+        return np.ones_like(rho, dtype=float)
 
     def _store_diagnostics(
         self,
@@ -894,14 +925,17 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         global_prior,
         responsive,
         bias,
+        evidence_weight,
     ) -> None:
         self.last_alpha_ = alpha
         self.last_beta_ = beta
         self.last_raw_score_ = raw_score
         self.last_final_score_ = final_score
+        self.last_evidence_weight_ = evidence_weight
         self.last_h_actual_ = local["h_actual"]
         self.last_h_ref_ = local["h_ref"]
         self.last_rho_ = local["rho"]
+        self.last_rho_effective_ = self._effective_rho(local["rho"])
         self.last_nu_ = nu
         self.last_k_local_ = local["k_local"]
         self.last_local_success_ = local["success"]
@@ -913,7 +947,9 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_tau_pool_ = global_prior["tau_pool"]
         self.last_responsive_combination_ = self.responsive_combination
         self.last_gated_thompson_mode_ = self.gated_thompson_mode
+        self.last_evidence_weighting_ = self.evidence_weighting
         self.last_local_evidence_mode_ = self.local_evidence_mode
+        self.last_use_rho_correction_ = self.use_rho_correction
         self.last_local_kernel_bandwidth_ = local.get("kernel_bandwidth")
         self.last_local_kernel_weight_sum_ = local.get("kernel_weight_sum")
         self.last_lambda_local_ = (
@@ -941,9 +977,11 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_beta_ = None
         self.last_raw_score_ = None
         self.last_final_score_ = None
+        self.last_evidence_weight_ = None
         self.last_h_actual_ = None
         self.last_h_ref_ = None
         self.last_rho_ = None
+        self.last_rho_effective_ = None
         self.last_nu_ = None
         self.last_k_local_ = None
         self.last_local_success_ = None
@@ -955,7 +993,9 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_tau_pool_ = None
         self.last_responsive_combination_ = None
         self.last_gated_thompson_mode_ = None
+        self.last_evidence_weighting_ = None
         self.last_local_evidence_mode_ = None
+        self.last_use_rho_correction_ = None
         self.last_local_kernel_bandwidth_ = None
         self.last_local_kernel_weight_sum_ = None
         self.last_lambda_local_ = None
