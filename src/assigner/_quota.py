@@ -123,6 +123,32 @@ class QuotaPairAssigner(PairAssigner):
             name="annotator_remaining_counts",
         )
 
+    def constraint_pressure(
+        self,
+        *,
+        budget,
+        annotator_indices=None,
+        annotator_remaining_counts=None,
+        **kwargs,
+    ) -> float:
+        del kwargs
+        if int(budget) <= 0:
+            return 0.0
+        if annotator_indices is None:
+            if annotator_remaining_counts is None:
+                return 0.0
+            annotator_indices = np.arange(len(annotator_remaining_counts))
+        annotator_indices = np.asarray(annotator_indices, dtype=int)
+        if annotator_indices.size <= 1:
+            return 0.0
+        remaining = self._coerce_annotator_remaining(
+            annotator_indices,
+            annotator_remaining_counts,
+        )
+        if remaining is None:
+            return 1.0
+        return 1.0 if np.count_nonzero(remaining > 0) > 1 else 0.0
+
     @staticmethod
     def _pick_max_utility_pair(U, cand_cols):
         sub = U[:, cand_cols]

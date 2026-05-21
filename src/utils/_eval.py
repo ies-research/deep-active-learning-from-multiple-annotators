@@ -22,6 +22,15 @@ def _entropy_from_counts(counts: np.ndarray) -> Tuple[float, float]:
     return H, Hn
 
 
+def _effective_annotators_from_counts(counts: np.ndarray) -> float:
+    """Return the entropy-effective number of annotators for count data."""
+    counts = np.asarray(counts, dtype=float)
+    if counts.sum() <= 0:
+        return 0.0
+    H, _ = _entropy_from_counts(counts)
+    return float(np.exp(H))
+
+
 def _gini(x: np.ndarray) -> float:
     """Gini coefficient for nonnegative counts."""
     x = np.asarray(x, dtype=float)
@@ -191,12 +200,17 @@ def compute_cycle_metrics(
 
     # Allocation concentration across annotators
     H, Hn = _entropy_from_counts(per_annot)
+    effective_annotators = _effective_annotators_from_counts(per_annot)
     G = _gini(per_annot)
 
     # Delta stats (new labels this cycle)
     new_pairs = 0.0
     new_pair_acc = 0.0
     new_unique_samples = 0.0
+    new_alloc_entropy = 0.0
+    new_alloc_entropy_norm = 0.0
+    new_alloc_effective_annotators = 0.0
+    new_alloc_gini = 0.0
 
     if prev_present is None and prev_y_acquired is not None:
         Y_prev = np.asarray(prev_y_acquired)
@@ -215,6 +229,14 @@ def compute_cycle_metrics(
         new_mask = present & ~prev_present
         npairs = int(new_mask.sum())
         new_pairs = float(npairs)
+        new_per_annot = new_mask.sum(axis=0).astype(int)
+        new_alloc_entropy, new_alloc_entropy_norm = _entropy_from_counts(
+            new_per_annot
+        )
+        new_alloc_effective_annotators = _effective_annotators_from_counts(
+            new_per_annot
+        )
+        new_alloc_gini = _gini(new_per_annot)
         if npairs > 0:
             new_correct = ((Y == y_true[:, None]) & new_mask).sum()
             new_pair_acc = float(new_correct / npairs)
@@ -277,11 +299,18 @@ def compute_cycle_metrics(
         # allocation concentration
         "alloc_entropy": float(H),
         "alloc_entropy_norm": float(Hn),
+        "alloc_effective_annotators": float(effective_annotators),
         "alloc_gini": float(G),
         # delta (new labels)
         "delta_new_pairs": float(new_pairs),
         "delta_new_pair_acc": float(new_pair_acc),
         "delta_new_unique_samples": float(new_unique_samples),
+        "delta_new_alloc_entropy": float(new_alloc_entropy),
+        "delta_new_alloc_entropy_norm": float(new_alloc_entropy_norm),
+        "delta_new_alloc_effective_annotators": float(
+            new_alloc_effective_annotators
+        ),
+        "delta_new_alloc_gini": float(new_alloc_gini),
         # test (NaN if not provided)
         "test_acc": float(test_acc) if np.isfinite(test_acc) else np.nan,
         "test_balanced_acc": (

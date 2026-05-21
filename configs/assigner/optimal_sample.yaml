@@ -1,0 +1,9 @@
+_target_: src.assigner.OptimalPairAssigner
+min_per_sample: 1
+max_per_sample: null
+min_per_annotator: null
+max_per_annotator: null
+max_per_annotator_mode: fixed
+max_per_annotator_multiplier: 1.0
+budget_constraint: exact
+on_infeasible: raise

@@ -195,10 +195,14 @@ IMPORTANT_KEYS = [
     "acc_majority_vote_tie_rate",
     "acc_disagreement_rate_multi",
     "alloc_entropy_norm",
+    "alloc_effective_annotators",
     "alloc_gini",
     "delta_new_pairs",
     "delta_new_pair_acc",
     "delta_new_unique_samples",
+    "delta_new_alloc_entropy_norm",
+    "delta_new_alloc_effective_annotators",
+    "delta_new_alloc_gini",
     "test_acc",
     "test_balanced_acc",
     "test_log_loss",
@@ -235,11 +239,15 @@ def pretty_cycle_metrics(
 
     # Fairness / allocation
     ent_norm = _maybe(m, "alloc_entropy_norm")
+    eff_annot = _maybe(m, "alloc_effective_annotators")
     gini = _maybe(m, "alloc_gini")
 
     # Deltas
     d_pairs = _maybe(m, "delta_new_pairs")
     d_pairs_acc = _maybe(m, "delta_new_pair_acc")
+    d_ent_norm = _maybe(m, "delta_new_alloc_entropy_norm")
+    d_eff_annot = _maybe(m, "delta_new_alloc_effective_annotators")
+    d_gini = _maybe(m, "delta_new_alloc_gini")
 
     # Model
     test_acc = _maybe(m, "test_acc")
@@ -294,7 +302,16 @@ def pretty_cycle_metrics(
 
     print("\nAllocation fairness")
     print(f"  entropy_norm                : {_format_float(ent_norm, 3)}")
+    print(
+        f"  effective_annotators        : {_format_float(eff_annot, 2)}"
+    )
     print(f"  gini                        : {_format_float(gini, 3)}")
+    if np.isfinite(d_pairs):
+        print(f"  new_entropy_norm            : {_format_float(d_ent_norm, 3)}")
+        print(
+            f"  new_effective_annotators    : {_format_float(d_eff_annot, 2)}"
+        )
+        print(f"  new_gini                    : {_format_float(d_gini, 3)}")
 
     print("\nModel performance")
     print(f"  test_acc                    : {_format_pct(test_acc, 2)}")
@@ -331,6 +348,7 @@ class MetricHistory:
             "acc_majority_vote",
             "acc_majority_vote_balanced",
             "alloc_entropy_norm",
+            "alloc_effective_annotators",
             "alloc_gini",
             "test_acc",
             "test_balanced_acc",
@@ -339,7 +357,7 @@ class MetricHistory:
 
         header = (
             f"{'cy':>3}  {'pairs':>9}  {'cov':>7}  {'pair':>7}  {'pbal':>7}  "
-            f"{'mv':>7}  {'mvbal':>7}  {'ent':>6}  {'gini':>6}  {'tacc':>7}  "
+            f"{'mv':>7}  {'mvbal':>7}  {'ent':>6}  {'eff':>6}  {'gini':>6}  {'tacc':>7}  "
             f"{'tbacc':>7}  {'ll':>8}"
         )
         print(header)
@@ -354,6 +372,7 @@ class MetricHistory:
             mv = _format_pct(_maybe(r, "acc_majority_vote"), 1)
             mv_bal = _format_pct(_maybe(r, "acc_majority_vote_balanced"), 1)
             ent = _format_float(_maybe(r, "alloc_entropy_norm"), 3)
+            eff = _format_float(_maybe(r, "alloc_effective_annotators"), 2)
             gini = _format_float(_maybe(r, "alloc_gini"), 3)
             tacc = _format_pct(_maybe(r, "test_acc"), 1)
             tbacc = _format_pct(_maybe(r, "test_balanced_acc"), 1)
@@ -361,7 +380,7 @@ class MetricHistory:
 
             print(
                 f"{cy:>3}  {pairs:>9}  {cov:>7}  {pair:>7}  {pair_bal:>7}  "
-                f"{mv:>7}  {mv_bal:>7}  {ent:>6}  {gini:>6}  {tacc:>7}  "
+                f"{mv:>7}  {mv_bal:>7}  {ent:>6}  {eff:>6}  {gini:>6}  {tacc:>7}  "
                 f"{tbacc:>7}  {ll:>8}"
             )
 

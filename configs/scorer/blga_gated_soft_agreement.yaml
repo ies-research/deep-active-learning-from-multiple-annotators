@@ -1,0 +1,6 @@
+defaults:
+  - blga_gated
+  - _self_
+
+agreement_mode: soft_chance_corrected
+bias_response_weighting: uniform

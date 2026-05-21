@@ -1,0 +1,5 @@
+defaults:
+  - blga_gated
+  - _self_
+
+bias_response_weighting: uniform

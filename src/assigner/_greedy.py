@@ -308,6 +308,65 @@ class GreedyPairAssigner(PairAssigner):
         )
         return max(cap, 1)
 
+    def constraint_pressure(
+        self,
+        *,
+        budget,
+        annotator_indices=None,
+        annotator_remaining_counts=None,
+        **kwargs,
+    ) -> float:
+        del kwargs
+        budget = int(budget)
+        if budget <= 0:
+            return 0.0
+        if annotator_indices is None:
+            if annotator_remaining_counts is None:
+                return 0.0
+            annotator_indices = np.arange(len(annotator_remaining_counts))
+        annotator_indices = np.asarray(annotator_indices, dtype=int)
+        if annotator_indices.size <= 1:
+            return 0.0
+
+        remaining = self._coerce_annotator_remaining(
+            annotator_indices,
+            annotator_remaining_counts,
+        )
+        upper = np.full(annotator_indices.size, budget, dtype=float)
+        max_per_annotator = self._resolve_max_per_annotator(
+            budget=budget,
+            n_annotators=annotator_indices.size,
+        )
+        if max_per_annotator is not None:
+            upper = np.minimum(upper, float(max_per_annotator))
+        if remaining is not None:
+            upper = np.minimum(upper, remaining.astype(float, copy=False))
+
+        upper = upper[upper > 0.0]
+        if upper.size <= 1:
+            return 0.0
+
+        effective_budget = min(float(budget), float(upper.sum()))
+        if effective_budget <= 0.0:
+            return 0.0
+        min_needed = self._min_annotators_needed(
+            upper=upper,
+            effective_budget=effective_budget,
+        )
+        pressure = (min_needed - 1.0) / max(float(upper.size - 1), 1.0)
+        return float(np.clip(pressure, 0.0, 1.0))
+
+    @staticmethod
+    def _min_annotators_needed(*, upper: np.ndarray, effective_budget: float) -> float:
+        remaining = float(effective_budget)
+        used = 0
+        for capacity in np.sort(upper)[::-1]:
+            if remaining <= 1e-12:
+                break
+            remaining -= float(capacity)
+            used += 1
+        return float(used)
+
     def _argmax(self, score, rng):
         flat = np.asarray(score, dtype=float).ravel()
         max_score = np.max(flat)

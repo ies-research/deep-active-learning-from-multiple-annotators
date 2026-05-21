@@ -86,6 +86,21 @@ class PairAssigner(ABC):
             **kwargs,
         )
 
+    def constraint_pressure(
+        self,
+        *,
+        budget,
+        annotator_indices=None,
+        annotator_remaining_counts=None,
+        **kwargs,
+    ) -> float:
+        """
+        Return a batch-level scalar in [0, 1] describing how strongly the
+        assigner's annotator constraints prevent concentration on one annotator.
+        """
+        del budget, annotator_indices, annotator_remaining_counts, kwargs
+        return 0.0
+
     @abstractmethod
     def _assign(
         self,

@@ -1,21 +1,21 @@
 defaults:
-  - al: trec6
-  - classifier: annot_mix_gating
+  - al: dtd47
+  - classifier: geo_reg_f
   - paths: default
-  - dataset: trec6
-  - embedder@classification_embedder: mpnetv2
-  - embedder@simulation_embedder: minilmv2
+  - dataset: dtd47
+  - embedder@classification_embedder: dinov2
+  - embedder@simulation_embedder: dinov2
   - pipeline: default
-  - simulation: trec6
+  - simulation: dtd47_spammer_contaminated_40
   - module: mlp
   - training: default 
   - scheduler: step_ratio_1
   - sample@sample.init: random
   - sample@sample.actual: random
   - scorer@scorer.init: random
-  - scorer@scorer.actual: blga_gated_mean
+  - scorer@scorer.actual: blga_gated_soft_agreement
   - assigner@assigner.init: quota_sample
-  - assigner@assigner.actual: greedy_sample_loose_cap
+  - assigner@assigner.actual: optimal_sample_loose_cap
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
   - _self_
@@ -37,9 +37,9 @@ utility_tsne:
   file_format: png
   dpi: 160
 annotator_behavior_tsne:
-  enabled: false
-  annotator_indices: [] # [] means all annotators
-  max_points: 1000
+  enabled: true
+  annotator_indices: [5] # [] means all annotators
+  max_points: 2000
   stratify_by_true_class: true
   feature_preprocess: auto
   perplexity: 30

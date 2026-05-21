@@ -2,5 +2,4 @@ defaults:
   - blga_gated
   - _self_
 
-locality_mode: global
 evidence_weighting: uniform

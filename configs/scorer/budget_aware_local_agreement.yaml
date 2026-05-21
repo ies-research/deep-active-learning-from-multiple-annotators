@@ -6,10 +6,13 @@ locality_mode: local
 responsive_combination: gated 
 gated_thompson_mode: weighted_average
 evidence_weighting: confidence
+agreement_mode: argmax
+bias_response_weighting: evidence
 local_evidence_mode: kernel
 local_kernel_bandwidth_mode: full_kth
 use_rho_correction: false
 base_prior_strength: 1.0
+prior_mean_min: 1e-3
 pool_prior_scale: 1.0
 local_prior_scale: 1.0
 local_prior_min: 1.0
