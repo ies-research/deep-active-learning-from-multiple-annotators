@@ -1,0 +1,6 @@
+defaults:
+  - blga_gated_ucb
+  - _self_
+
+global_exploration_weight: 0.5
+local_exploration_weight: 1.0

@@ -1,6 +1,10 @@
 _target_: src.scorer.BudgetAwareLocalAgreementScorer
 score_mode: thompson
 thompson_samples: 5
+ucb_mode: std
+global_exploration_weight: 1.0
+local_exploration_weight: 1.0
+constraint_damps_global_exploration: true
 bias_model_correction: model_average
 locality_mode: local
 responsive_combination: gated 

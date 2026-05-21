@@ -1,0 +1,11 @@
+defaults:
+  - blga_gated
+  - _self_
+
+score_mode: ucb
+ucb_mode: std
+global_exploration_weight: 1.0
+local_exploration_weight: 1.0
+constraint_damps_global_exploration: true
+agreement_mode: soft_chance_corrected
+bias_response_weighting: uniform

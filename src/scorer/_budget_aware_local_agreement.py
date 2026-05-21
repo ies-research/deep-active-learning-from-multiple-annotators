@@ -28,14 +28,27 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
 
     Parameters
     ----------
-    score_mode : {"mean", "thompson"}, default="thompson"
+    score_mode : {"mean", "thompson", "ucb"}, default="thompson"
         How the local Beta posterior is converted to a utility. ``"mean"`` uses
         the posterior mean and is deterministic. ``"thompson"`` draws from the
         posterior and averages ``thompson_samples`` draws.
+        ``"ucb"`` uses deterministic posterior optimism.
     thompson_samples : int, default=1
         Number of posterior samples used when ``score_mode="thompson"``. A value
         of 1 is standard Thompson sampling. Larger values smooth the random
         utility and approach the posterior mean.
+    ucb_mode : {"std"}, default="std"
+        Uncertainty bonus used when ``score_mode="ucb"``. ``"std"`` adds a
+        multiple of the Beta posterior standard deviation.
+    global_exploration_weight : float, default=1.0
+        Number of global posterior standard deviations added in UCB mode.
+        In gated mode this affects only the global component.
+    local_exploration_weight : float, default=1.0
+        Number of local posterior standard deviations added in UCB mode.
+        In gated mode this affects only the local component.
+    constraint_damps_global_exploration : bool, default=True
+        Whether to multiply the global UCB weight by
+        ``1 - constraint_pressure``.
     bias_model_correction : {"none", "model_average"}, default="none"
         Optional global response-bias branch. ``"none"`` uses only the responsive
         agreement posterior. ``"model_average"`` mixes the responsive posterior
@@ -137,6 +150,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         *,
         score_mode: str = "thompson",
         thompson_samples: int = 1,
+        ucb_mode: str = "std",
+        global_exploration_weight: float = 1.0,
+        local_exploration_weight: float = 1.0,
+        constraint_damps_global_exploration: bool = True,
         bias_model_correction: str = "none",
         locality_mode: str = "local",
         responsive_combination: str = "prior",
@@ -160,10 +177,18 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         random_state=None,
         eps: float = 1e-12,
     ):
-        if score_mode not in {"mean", "thompson"}:
-            raise ValueError("score_mode must be one of {'mean', 'thompson'}.")
+        if score_mode not in {"mean", "thompson", "ucb"}:
+            raise ValueError(
+                "score_mode must be one of {'mean', 'thompson', 'ucb'}."
+            )
         if int(thompson_samples) <= 0:
             raise ValueError("thompson_samples must be positive.")
+        if ucb_mode not in {"std"}:
+            raise ValueError("ucb_mode must be 'std'.")
+        if float(global_exploration_weight) < 0.0:
+            raise ValueError("global_exploration_weight must be non-negative.")
+        if float(local_exploration_weight) < 0.0:
+            raise ValueError("local_exploration_weight must be non-negative.")
         if bias_model_correction not in {"none", "model_average"}:
             raise ValueError(
                 "bias_model_correction must be one of {'none', 'model_average'}."
@@ -217,6 +242,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
 
         self.score_mode = str(score_mode)
         self.thompson_samples = int(thompson_samples)
+        self.ucb_mode = str(ucb_mode)
+        self.global_exploration_weight = float(global_exploration_weight)
+        self.local_exploration_weight = float(local_exploration_weight)
+        self.constraint_damps_global_exploration = bool(
+            constraint_damps_global_exploration
+        )
         self.bias_model_correction = str(bias_model_correction)
         self.locality_mode = str(locality_mode)
         self.responsive_combination = str(responsive_combination)
@@ -392,6 +423,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             annotator_indices=annotator_indices,
             bias=bias,
             responsive=responsive,
+            constraint_pressure=constraint_pressure,
         )
 
         feasible = ~observed_mask[np.ix_(sample_indices, annotator_indices)]
@@ -904,6 +936,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         annotator_indices: np.ndarray,
         bias: dict[str, np.ndarray] | None,
         responsive: dict[str, np.ndarray] | None,
+        constraint_pressure: float,
     ) -> np.ndarray:
         mean = (
             responsive["mean"]
@@ -915,6 +948,22 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 return mean
             p_resp = bias["p_resp"][annotator_indices][None, :]
             return p_resp * mean + (1.0 - p_resp) * bias["bias_score"]
+
+        if self.score_mode == "ucb":
+            responsive_ucb = self._responsive_ucb(
+                alpha=alpha,
+                beta=beta,
+                responsive=responsive,
+                constraint_pressure=constraint_pressure,
+            )
+            if bias is None:
+                return responsive_ucb
+            p_resp = bias["p_resp"][annotator_indices][None, :]
+            return np.clip(
+                p_resp * responsive_ucb + (1.0 - p_resp) * bias["bias_score"],
+                0.0,
+                1.0,
+            )
 
         theta = self._sample_responsive(alpha=alpha, beta=beta, responsive=responsive)
         if bias is None:
@@ -935,6 +984,61 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 bias_draws,
             )
         return utility_draws.mean(axis=0)
+
+    def _responsive_ucb(
+        self,
+        *,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        responsive: dict[str, np.ndarray] | None,
+        constraint_pressure: float,
+    ) -> np.ndarray:
+        if self.ucb_mode != "std":
+            raise RuntimeError(f"Unsupported ucb_mode={self.ucb_mode!r}.")
+
+        global_weight = self.global_exploration_weight
+        if self.constraint_damps_global_exploration:
+            global_weight *= 1.0 - float(np.clip(constraint_pressure, 0.0, 1.0))
+
+        if responsive is None:
+            mean = alpha / np.maximum(alpha + beta, self.eps)
+            std = self._beta_std(alpha, beta)
+            if self.locality_mode == "local":
+                weight = self.local_exploration_weight
+            else:
+                weight = global_weight
+            return np.clip(mean + weight * std, 0.0, 1.0)
+
+        mean_global = responsive["alpha_global"] / np.maximum(
+            responsive["alpha_global"] + responsive["beta_global"],
+            self.eps,
+        )
+        mean_local = responsive["alpha_local"] / np.maximum(
+            responsive["alpha_local"] + responsive["beta_local"],
+            self.eps,
+        )
+        global_ucb = mean_global + global_weight * self._beta_std(
+            responsive["alpha_global"],
+            responsive["beta_global"],
+        )
+        local_ucb = mean_local + self.local_exploration_weight * self._beta_std(
+            responsive["alpha_local"],
+            responsive["beta_local"],
+        )
+        lambda_local = responsive["lambda_local"]
+        return np.clip(
+            (1.0 - lambda_local) * global_ucb + lambda_local * local_ucb,
+            0.0,
+            1.0,
+        )
+
+    def _beta_std(self, alpha: np.ndarray, beta: np.ndarray) -> np.ndarray:
+        total = np.maximum(alpha + beta, self.eps)
+        variance = (alpha * beta) / np.maximum(
+            np.square(total) * (total + 1.0),
+            self.eps,
+        )
+        return np.sqrt(np.maximum(variance, 0.0))
 
     def _sample_responsive(
         self,
@@ -1035,6 +1139,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_tau_pool_ = global_prior["tau_pool"]
         self.last_responsive_combination_ = self.responsive_combination
         self.last_gated_thompson_mode_ = self.gated_thompson_mode
+        self.last_ucb_mode_ = self.ucb_mode
+        self.last_global_exploration_weight_ = self.global_exploration_weight
+        self.last_local_exploration_weight_ = self.local_exploration_weight
+        self.last_constraint_damps_global_exploration_ = (
+            self.constraint_damps_global_exploration
+        )
         self.last_evidence_weighting_ = self.evidence_weighting
         self.last_agreement_mode_ = self.agreement_mode
         self.last_bias_response_weighting_ = self.bias_response_weighting
@@ -1087,6 +1197,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_tau_pool_ = None
         self.last_responsive_combination_ = None
         self.last_gated_thompson_mode_ = None
+        self.last_ucb_mode_ = None
+        self.last_global_exploration_weight_ = None
+        self.last_local_exploration_weight_ = None
+        self.last_constraint_damps_global_exploration_ = None
         self.last_evidence_weighting_ = None
         self.last_agreement_mode_ = None
         self.last_bias_response_weighting_ = None
