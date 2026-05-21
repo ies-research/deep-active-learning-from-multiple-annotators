@@ -1,0 +1,9 @@
+types:
+  - _target_: src.dataset.AnnotatorTypeConfig
+    name: equal_global_specialist
+    proportion: 1.0
+    q_mean: 0.70
+    q_std: 0.01
+    difficulty_beta_mean: 1.20
+    difficulty_beta_std: 0.02
+    local_variability: 1.0

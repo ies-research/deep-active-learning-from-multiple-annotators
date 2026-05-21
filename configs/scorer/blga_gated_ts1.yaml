@@ -1,0 +1,6 @@
+defaults:
+  - blga_gated
+  - _self_
+
+score_mode: thompson
+thompson_samples: 1

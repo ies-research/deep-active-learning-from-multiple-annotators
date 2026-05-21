@@ -7,50 +7,23 @@ from ._cache import sha1_json, sha1_bytes, to_plain
 import json
 
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans
 from sklearn.neighbors import NearestNeighbors
 
 
 @dataclass(frozen=True)
 class AnnotatorTypeConfig:
     """
-    Configuration for an annotator archetype.
+    Configuration for one annotator archetype.
 
-    Parameters
-    ----------
-    name:
-        Identifier used for logging/debugging.
-    proportion:
-        Relative weight of this type in the annotator population.
-        The weights are normalized internally and do not need to sum to 1.0.
-    q_mean, q_std:
-        For non-spammers: corrected skill ``q_a`` is sampled from a Beta
-        distribution parameterized by mean/std on [0,1].
-        Raw accuracy is mapped by class count ``K`` as:
-        ``p_a = 1/K + (1 - 1/K) * q_a``.
-        ``p_a`` defines the diagonal mass of the base confusion mean.
-    s_mean, s_std:
-        For non-spammers: global (per-annotator) confusion rows are sampled as
-        ``Dirichlet(s_a * mu_row)``, where ``s_a` is drawn lognormally with
-        mean ``s_mean`` and log-space sigma ``s_std``.
-        Larger ``s_a`` means that the sampled rows stay closer to mu_row
-        (more consistent).
-    kappa_mean, kappa_std:
-        Cluster-conditioned confusion rows are sampled as
-        ``Dirichlet(kappa_a * C_base_row)``.
-        Larger ``kappa_a`` means that there is less drift across clusters.
-    difficulty_beta_mean, difficulty_beta_std:
-        For non-spammers: annotator-specific sensitivity to instance
-        difficulty. Larger ``beta_a`` means that hard instances cause a
-        stronger drop in the probability of the correct label.
-    spammer_mode:
-        - If "uniform": annotator outputs labels uniformly at random over
-          classes.
-        - If "single_class": annotator always outputs one fixed class.
-        - If None: normal annotator with p/s/kappa.
-    single_class:
-        Used only for spammer_mode="single_class". If ``None``, a random class
-        is chosen.
+    Normal annotators follow a local-expertise GLAD/IRT-style model. Their
+    corrected global skill ``q_a`` is sampled from ``q_mean/q_std`` and mapped
+    to class-count-aware accuracy as ``p = chance + (1 - chance) * q_a``.
+    ``difficulty_beta_*`` controls sensitivity to shared item difficulty.
+    ``local_variability`` multiplies the regime-level local expertise target.
+
+    Spammers ignore skill, difficulty, and local expertise:
+    - ``uniform`` samples labels uniformly from all classes.
+    - ``single_class`` always emits one fixed class.
     """
 
     name: str
@@ -59,14 +32,9 @@ class AnnotatorTypeConfig:
     q_mean: float = 0.0
     q_std: float = 0.0
 
-    s_mean: float = 150.0
-    s_std: float = 0.35
-
-    kappa_mean: float = 200.0
-    kappa_std: float = 0.35
-
     difficulty_beta_mean: float = 3.0
     difficulty_beta_std: float = 0.35
+    local_variability: float = 1.0
 
     spammer_mode: Optional[Literal["uniform", "single_class"]] = None
     single_class: Optional[int] = None
@@ -77,24 +45,14 @@ class MultiAnnotatorSimConfig:
     """
     Configuration for multi-annotator simulation and caching.
 
-    Simulation model
-    ----------------
-    - Assign each sample ``X[i]`` a cluster id ``c_i`` using k-means on ``X``.
-    - Optionally derive an instance difficulty score ``d_i`` from local
-      class overlap in feature space using k-nearest neighbors.
-    - Optionally aggregate the local kNN label distributions within each
-      ``(cluster, true-class)`` cell to form a cluster/class ambiguity template
-      that steers off-diagonal confusion mass toward plausible alternatives.
-    - Each annotator ``a`` has a global confusion matrix ``C_base[a]``.
-    - For each cluster ``g``, sample a cluster-specific confusion matrix
-      ``C[a,g]`` around a cluster mean that blends ``C_base[a]`` with the
-      ambiguity template via a Dirichlet with concentration ``kappa_a``.
-    - For each ``(i, a)```, sample label
-      ``z[i,a] ~ Categorical(C[a, c_i, y_i, :])`` with optional missingness.
-      If difficulty is enabled, the diagonal mass of ``C[a, c_i, y_i, :]`` is
-      adjusted based on ``d_i`` while preserving the relative off-diagonal
-      mass. The adjustment is centered so that average annotator quality stays
-      close to the configured baseline.
+    The simulator uses a local-expertise GLAD/IRT-style model:
+
+    ``eta_ai = logit(q_a) - beta_a * difficulty_i + local_effect_ai``
+
+    where ``q_a`` is corrected global annotator skill, ``difficulty_i`` is a
+    shared kNN class-overlap difficulty score, and ``local_effect_ai`` is an
+    optional annotator-specific feature-local expertise term. Wrong labels for
+    normal annotators are sampled uniformly over the incorrect classes.
 
     Caching requirement
     -------------------
@@ -123,19 +81,9 @@ class MultiAnnotatorSimConfig:
         Fraction of items per annotator that are missing (Bernoulli).
     missing_value:
         Value used for missing labels (e.g., -1).
-    use_clusters:
-        If False, all samples share one cluster (no instance dependence).
-    n_clusters:
-        Number of clusters G used in ``k``-means (only if
-        ``use_clusters=True``).
-    kmeans_seed:
-        RNG seed for k-means initialization.
-    kmeans_iters:
-        Number of Lloyd iterations for k-means.
     feature_preprocess:
         Preprocessing applied once to the feature matrix before any
-        geometry-based simulation step. This affects both k-means clustering
-        and kNN-derived difficulty / ambiguity estimation.
+        geometry-based simulation step.
     use_difficulty:
         Whether to modulate sample-specific noise using a kNN-based difficulty
         score computed from ``X`` and ``y``.
@@ -146,17 +94,6 @@ class MultiAnnotatorSimConfig:
     difficulty_alpha:
         Exponent applied after normalization. Values > 1 sharpen difficulty,
         values < 1 flatten it.
-    use_knn_ambiguity:
-        Whether to blend cluster/class ambiguity templates derived from local
-        kNN label distributions into the cluster-conditioned confusion means.
-    knn_ambiguity_blend:
-        Blend weight between the annotator-specific off-diagonal base pattern
-        and the cluster/class ambiguity template. ``0`` keeps the base pattern,
-        ``1`` uses only the ambiguity template.
-    knn_ambiguity_min_samples:
-        Minimum number of samples required in a ``(cluster, true-class)`` cell
-        before using its local ambiguity template. Sparser cells fall back to a
-        global class-conditional ambiguity template.
     types:
         List of annotator type configs.
 
@@ -177,22 +114,27 @@ class MultiAnnotatorSimConfig:
     missing_rate: float = 0.0
     missing_value: int = -1
 
-    use_clusters: bool = True
-    n_clusters: int = 50
-    kmeans_seed: int = 0
-    k_means_max_iter: int = 100
-    k_means_batch_size: int = 1024
     feature_preprocess: Literal[
         "none", "l2_normalize", "standardize"
     ] = "none"
 
-    use_difficulty: bool = False
+    use_difficulty: bool = True
     difficulty_k: int = 15
     difficulty_metric: Literal["entropy", "one_minus_max"] = "entropy"
     difficulty_alpha: float = 1.0
-    use_knn_ambiguity: bool = False
-    knn_ambiguity_blend: float = 0.35
-    knn_ambiguity_min_samples: int = 5
+
+    local_expertise_enabled: bool = False
+    local_expertise_kind: Literal["feature", "class"] = "feature"
+    local_expertise_target_gap_q: float = 0.0
+    local_expertise_n_classes: int = 2
+    local_expertise_n_prototypes: int = 3
+    local_expertise_bandwidth_quantile: float = 0.10
+    local_expertise_prototype_sampling: Literal["class_balanced"] = (
+        "class_balanced"
+    )
+    local_expertise_score: Literal["rbf_max"] = "rbf_max"
+    local_expertise_q_min: float = 0.0
+    local_expertise_q_max: float = 0.98
 
     types: Sequence[AnnotatorTypeConfig] = ()
 
@@ -344,6 +286,21 @@ def _clip01(x: float, eps: float = 1e-6) -> float:
     return float(np.clip(x, eps, 1.0 - eps))
 
 
+def _logit(p: np.ndarray | float, eps: float = 1e-6) -> np.ndarray:
+    p = np.clip(np.asarray(p, dtype=np.float64), eps, 1.0 - eps)
+    return np.log(p / (1.0 - p))
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    out = np.empty_like(x, dtype=np.float64)
+    pos = x >= 0
+    out[pos] = 1.0 / (1.0 + np.exp(-x[pos]))
+    exp_x = np.exp(x[~pos])
+    out[~pos] = exp_x / (1.0 + exp_x)
+    return out
+
+
 def _lognormal(rng: np.random.Generator, mean: float, sigma: float) -> float:
     mean = max(mean, 1e-6)
     sigma = max(sigma, 1e-9)
@@ -389,53 +346,28 @@ def build_annotator_params(
     n_classes: int,
     seed: int,
 ) -> Dict[str, Any]:
-    """
-    Sample per-annotator parameters from the configured archetypes.
-
-    Parameters
-    ----------
-    types:
-        Annotator archetype configs.
-    type_ids:
-        Array of shape (A,) assigning a type to each annotator.
-    n_classes:
-        Number of classes K.
-    seed:
-        RNG seed.
-
-    Returns
-    -------
-    params:
-        Dictionary containing:
-        - q: (A,) float32, corrected skill for normal annotators
-        - p: (A,) float32, accuracy for normal annotators
-        - s: (A,) float32, base Dirichlet concentration
-        - kappa: (A,) float32, cluster Dirichlet concentration
-        - beta: (A,) float32, difficulty sensitivity
-        - spammer_mode: list[str|None] length A
-        - single_class: (A,) int64, class for single-class spammers
-        - type_ids: (A,) int64
-    """
     rng = np.random.default_rng(seed)
     A = int(type_ids.shape[0])
     chance = 1.0 / float(n_classes)
 
     q = np.empty(A, dtype=np.float32)
     p = np.empty(A, dtype=np.float32)
-    s = np.empty(A, dtype=np.float32)
-    kappa = np.empty(A, dtype=np.float32)
     beta = np.empty(A, dtype=np.float32)
+    local_variability = np.empty(A, dtype=np.float32)
     spammer_mode: List[Optional[str]] = [None] * A
     single_class = np.full(A, -1, dtype=np.int64)
+    type_names = []
 
     for a in range(A):
         t = types[int(type_ids[a])]
+        type_names.append(t.name)
 
         if t.spammer_mode == "uniform":
             spammer_mode[a] = "uniform"
-            q[a] = float(0.0)  # informational only
-            p[a] = float(1.0 / n_classes)  # informational only
+            q[a] = 0.0
+            p[a] = chance
             beta[a] = 0.0
+            local_variability[a] = 0.0
         elif t.spammer_mode == "single_class":
             spammer_mode[a] = "single_class"
             single_class[a] = int(
@@ -446,6 +378,7 @@ def build_annotator_params(
             q[a] = np.nan
             p[a] = np.nan
             beta[a] = 0.0
+            local_variability[a] = 0.0
         else:
             qa = _sample_beta_from_mean_std(rng, t.q_mean, t.q_std)
             q[a] = qa
@@ -453,17 +386,15 @@ def build_annotator_params(
             beta[a] = _lognormal(
                 rng, t.difficulty_beta_mean, t.difficulty_beta_std
             )
-
-        s[a] = _lognormal(rng, t.s_mean, t.s_std)
-        kappa[a] = _lognormal(rng, t.kappa_mean, t.kappa_std)
+            local_variability[a] = max(float(t.local_variability), 0.0)
 
     return {
         "type_ids": type_ids.astype(np.int64, copy=False),
+        "type_names": type_names,
         "q": q,
         "p": p,
-        "s": s,
-        "kappa": kappa,
         "beta": beta,
+        "local_variability": local_variability,
         "spammer_mode": spammer_mode,
         "single_class": single_class,
     }
@@ -567,398 +498,376 @@ def compute_knn_difficulty(
     return np.power(raw, alpha).astype(np.float32)
 
 
-def _normalize_off_diagonal_template(
-    vec: np.ndarray,
+def _select_local_expertise_prototypes(
     *,
-    true_class: int,
-    n_classes: int,
-    smoothing: float = 1e-3,
+    y_true: np.ndarray,
+    n_annotators: int,
+    n_prototypes: int,
+    spammer_mode: Sequence[Optional[str]],
+    seed: int,
 ) -> np.ndarray:
-    out = np.asarray(vec, dtype=np.float64).copy()
-    out = np.clip(out, 0.0, None)
-    out[true_class] = 0.0
-
-    if n_classes <= 1:
-        return np.ones(1, dtype=np.float32)
-
-    out += smoothing / max(n_classes - 1, 1)
-    out[true_class] = 0.0
-    s = out.sum()
-    if s <= 0.0:
-        out.fill(1.0 / (n_classes - 1))
-        out[true_class] = 0.0
-        s = out.sum()
-    out /= s
-    return out.astype(np.float32)
-
-
-def build_cluster_ambiguity_templates(
-    *,
-    knn_probs: np.ndarray,  # (N, K)
-    cluster_id: np.ndarray,  # (N,)
-    y_true: np.ndarray,  # (N,)
-    n_classes: int,
-    n_clusters: int,
-    min_samples: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Aggregate local kNN label distributions into cluster/class ambiguity rows.
-
-    Returns
-    -------
-    ambiguity:
-        Array of shape (G, K, K). Each row has zero diagonal and normalized
-        off-diagonal mass.
-    counts:
-        Integer array of shape (G, K) with the sample count in each
-        ``(cluster, true-class)`` cell.
-    """
-    knn_probs = np.asarray(knn_probs, dtype=np.float32)
-    cluster_id = np.asarray(cluster_id, dtype=np.int64)
-    y_true = _as_1d_int_labels(y_true, name="y_true")
-
-    G = int(n_clusters)
-    K = int(n_classes)
-
-    if knn_probs.shape != (y_true.shape[0], K):
+    if n_prototypes <= 0:
         raise ValueError(
-            "knn_probs must have shape (N, K), got "
-            f"{knn_probs.shape} for N={y_true.shape[0]}, K={K}."
+            "local_expertise_n_prototypes must be > 0 when local expertise "
+            f"is enabled, got {n_prototypes}."
         )
 
-    counts = np.zeros((G, K), dtype=np.int64)
-    global_raw = np.zeros((K, K), dtype=np.float64)
-    global_counts = np.zeros(K, dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    classes = np.unique(y_true)
+    by_class = {int(c): np.flatnonzero(y_true == c) for c in classes}
+    prototype_indices = np.full((n_annotators, n_prototypes), -1, dtype=np.int64)
+    class_order = rng.permutation(classes)
+    class_cursor = 0
 
-    for t in range(K):
-        mask_t = y_true == t
-        global_counts[t] = int(mask_t.sum())
-        if global_counts[t] > 0:
-            global_raw[t] = knn_probs[mask_t].mean(axis=0)
+    for a in range(n_annotators):
+        if spammer_mode[a] is not None:
+            continue
+        for s in range(n_prototypes):
+            if class_cursor % len(class_order) == 0:
+                class_order = rng.permutation(classes)
+            cls = int(class_order[class_cursor % len(class_order)])
+            class_cursor += 1
+            candidates = by_class.get(cls, np.empty(0, dtype=int))
+            if candidates.size == 0:
+                candidates = np.arange(y_true.shape[0])
+            prototype_indices[a, s] = int(rng.choice(candidates))
 
-    global_templates = np.zeros((K, K), dtype=np.float32)
-    for t in range(K):
-        global_templates[t] = _normalize_off_diagonal_template(
-            global_raw[t], true_class=t, n_classes=K
+    return prototype_indices
+
+
+def _compute_local_expertise_scores(
+    *,
+    X: np.ndarray,
+    prototype_indices: np.ndarray,
+    bandwidth_quantile: float,
+) -> np.ndarray:
+    if not 0.0 < float(bandwidth_quantile) < 1.0:
+        raise ValueError(
+            "local_expertise_bandwidth_quantile must be in (0, 1), got "
+            f"{bandwidth_quantile}."
         )
 
-    ambiguity = np.empty((G, K, K), dtype=np.float32)
-    for g in range(G):
-        mask_g = cluster_id == g
-        for t in range(K):
-            mask = mask_g & (y_true == t)
-            counts[g, t] = int(mask.sum())
-            if counts[g, t] >= min_samples:
-                raw = knn_probs[mask].mean(axis=0)
-                ambiguity[g, t] = _normalize_off_diagonal_template(
-                    raw, true_class=t, n_classes=K
-                )
+    X = np.asarray(X, dtype=np.float32)
+    N = X.shape[0]
+    A, _ = prototype_indices.shape
+    scores = np.zeros((N, A), dtype=np.float32)
+
+    for a in range(A):
+        valid = prototype_indices[a][prototype_indices[a] >= 0]
+        if valid.size == 0:
+            continue
+        annotator_score = np.zeros(N, dtype=np.float32)
+        for idx in valid:
+            dist = np.linalg.norm(X - X[int(idx)], axis=1)
+            positive_dist = dist[dist > 1e-12]
+            if positive_dist.size == 0:
+                sigma = 1.0
             else:
-                ambiguity[g, t] = global_templates[t]
+                sigma = float(np.quantile(positive_dist, bandwidth_quantile))
+                sigma = max(sigma, 1e-12)
+            rbf = np.exp(-0.5 * np.square(dist / sigma)).astype(np.float32)
+            annotator_score = np.maximum(annotator_score, rbf)
+        scores[:, a] = annotator_score
 
-    return ambiguity, counts
-
-
-def _dirichlet_rows(
-    rng: np.random.Generator, alpha_rows: np.ndarray
-) -> np.ndarray:
-    K = alpha_rows.shape[0]
-    out = np.empty((K, K), dtype=np.float32)
-    for t in range(K):
-        out[t] = rng.dirichlet(alpha_rows[t]).astype(np.float32)
-    return out
+    return scores
 
 
-def sample_global_confusions(
+def _select_class_expertise_classes(
     *,
-    n_classes: int,
-    p: np.ndarray,  # (A,)
-    s: np.ndarray,  # (A,)
-    spammer_mode: List[Optional[str]],
-    single_class: np.ndarray,
+    classes: np.ndarray,
+    n_annotators: int,
+    n_classes_per_annotator: int,
+    spammer_mode: Sequence[Optional[str]],
     seed: int,
-    eps: float = 1e-6,
 ) -> np.ndarray:
-    """
-    Create per-annotator global confusion matrices C_base.
+    if n_classes_per_annotator <= 0:
+        raise ValueError(
+            "local_expertise_n_classes must be > 0 for class expertise, got "
+            f"{n_classes_per_annotator}."
+        )
 
-    For normal annotators:
-      - mean row mu has diag=p_a, off=(1-p_a)/(K-1)
-      - sample each row Dirichlet(s_a * mu_row)
-
-    For spammers:
-      - uniform: rows are uniform
-      - single_class: rows are one-hot at the spammed class
-
-    Parameters
-    ----------
-    n_classes:
-        Number of classes K.
-    p, s:
-        Arrays of shape (A,) with accuracy and base concentration.
-    spammer_mode:
-        List length A with spammer modes.
-    single_class:
-        Array of shape (A,) with the fixed class for single-class spammers.
-    seed:
-        RNG seed.
-    eps:
-        Minimum Dirichlet concentration.
-
-    Returns
-    -------
-    C_base:
-        Array of shape (A, K, K). Rows sum to 1.
-    """
     rng = np.random.default_rng(seed)
-    A = int(p.shape[0])
-    K = int(n_classes)
+    classes = np.asarray(classes, dtype=np.int64)
+    selected = np.full(
+        (n_annotators, n_classes_per_annotator), -1, dtype=np.int64
+    )
+    class_order = rng.permutation(classes)
+    class_cursor = 0
 
-    C_base = np.empty((A, K, K), dtype=np.float32)
-
-    for a in range(A):
-        mode = spammer_mode[a]
-        if mode == "uniform":
-            C_base[a] = np.full((K, K), 1.0 / K, dtype=np.float32)
+    for a in range(n_annotators):
+        if spammer_mode[a] is not None:
             continue
-        if mode == "single_class":
-            j = int(single_class[a])
-            M = np.zeros((K, K), dtype=np.float32)
-            M[:, j] = 1.0
-            C_base[a] = M
-            continue
+        for s in range(n_classes_per_annotator):
+            if class_cursor % len(class_order) == 0:
+                class_order = rng.permutation(classes)
+            selected[a, s] = int(class_order[class_cursor % len(class_order)])
+            class_cursor += 1
 
-        pa = float(p[a])
-        sa = float(s[a])
-
-        off = (1.0 - pa) / (K - 1)
-        mu = np.full((K, K), off, dtype=np.float32)
-        np.fill_diagonal(mu, pa)
-
-        alpha = np.clip(sa * mu, eps, None)
-        C_base[a] = _dirichlet_rows(rng, alpha)
-
-    return C_base
+    return selected
 
 
-def sample_cluster_confusions(
+def _compute_class_expertise_scores(
     *,
-    C_base: np.ndarray,  # (A, K, K)
-    kappa: np.ndarray,  # (A,)
-    n_clusters: int,
-    ambiguity_templates: Optional[np.ndarray] = None,  # (G, K, K)
-    ambiguity_blend: float = 0.0,
-    use_ambiguity: Optional[np.ndarray] = None,  # (A,)
-    seed: int,
-    eps: float = 1e-6,
+    y_true: np.ndarray,
+    class_indices: np.ndarray,
 ) -> np.ndarray:
-    """
-    Sample cluster-conditioned confusion matrices around C_base.
-
-    Model:
-      C[a,g,t,:] ~ Dirichlet(kappa[a] * M[a,g,t,:])
-      where ``M`` optionally blends the annotator-specific off-diagonal base
-      row with a cluster/class ambiguity template.
-
-    Parameters
-    ----------
-    C_base:
-        Global confusion matrices, shape (A, K, K).
-    kappa:
-        Cluster concentration per annotator, shape (A,).
-    n_clusters:
-        Number of clusters G.
-    ambiguity_templates:
-        Optional ambiguity template array of shape (G, K, K) with zero
-        diagonal and normalized off-diagonal mass.
-    ambiguity_blend:
-        Blend weight in [0, 1] used when ``ambiguity_templates`` is provided.
-    use_ambiguity:
-        Optional boolean mask of shape (A,) indicating which annotators should
-        use the ambiguity blend. Spammers can be excluded this way.
-    seed:
-        RNG seed.
-    eps:
-        Minimum Dirichlet concentration.
-
-    Returns
-    -------
-    C_cluster:
-        Array of shape (A, G, K, K).
-    """
-    rng = np.random.default_rng(seed)
-    A, K, _ = C_base.shape
-    G = int(n_clusters)
-    blend = float(np.clip(ambiguity_blend, 0.0, 1.0))
-
-    base = np.clip(C_base, eps, 1.0)
-    C_cluster = np.empty((A, G, K, K), dtype=np.float32)
-
-    if ambiguity_templates is not None:
-        ambiguity_templates = np.asarray(ambiguity_templates, dtype=np.float32)
-        if ambiguity_templates.shape != (G, K, K):
-            raise ValueError(
-                "ambiguity_templates must have shape (G, K, K), got "
-                f"{ambiguity_templates.shape} for G={G}, K={K}."
-            )
-    if use_ambiguity is None:
-        use_ambiguity = np.ones(A, dtype=bool)
-    else:
-        use_ambiguity = np.asarray(use_ambiguity, dtype=bool)
-        if use_ambiguity.shape != (A,):
-            raise ValueError(
-                f"use_ambiguity must have shape (A,), got {use_ambiguity.shape}."
-            )
-
+    y_true = _as_1d_int_labels(y_true, name="y_true")
+    N = y_true.shape[0]
+    A = class_indices.shape[0]
+    scores = np.zeros((N, A), dtype=np.float32)
     for a in range(A):
-        ka = float(kappa[a])
-        for g in range(G):
-            for t in range(K):
-                mean_row = base[a, t]
-                if (
-                    ambiguity_templates is not None
-                    and blend > 0.0
-                    and bool(use_ambiguity[a])
-                ):
-                    diag = float(mean_row[t])
-                    off_base = mean_row.copy()
-                    off_base[t] = 0.0
-                    off_sum = float(off_base.sum())
-                    if off_sum > 0.0:
-                        off_base /= off_sum
-                    else:
-                        off_base = np.full(K, 1.0 / max(K - 1, 1), dtype=np.float32)
-                        off_base[t] = 0.0
-
-                    off_mix = (
-                        (1.0 - blend) * off_base
-                        + blend * ambiguity_templates[g, t]
-                    )
-                    off_mix[t] = 0.0
-                    off_mix_sum = float(off_mix.sum())
-                    if off_mix_sum > 0.0:
-                        off_mix /= off_mix_sum
-                    else:
-                        off_mix = off_base
-
-                    row = np.zeros(K, dtype=np.float32)
-                    row[t] = diag
-                    row += (1.0 - diag) * off_mix
-                    row[t] = diag
-                    mean_row = row
-
-                alpha = np.clip(ka * mean_row, eps, None)
-                C_cluster[a, g, t] = rng.dirichlet(alpha).astype(np.float32)
-
-    return C_cluster
+        selected = class_indices[a][class_indices[a] >= 0]
+        if selected.size:
+            scores[:, a] = np.isin(y_true, selected).astype(np.float32)
+    return scores
 
 
-def simulate_labels(
+def _quartile_masks(score: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    values = np.unique(score)
+    if values.size == 2:
+        bottom = score == values[0]
+        top = score == values[1]
+        if top.sum() > 0 and bottom.sum() > 0:
+            return top, bottom
+
+    lo = np.quantile(score, 0.25)
+    hi = np.quantile(score, 0.75)
+    bottom = score <= lo
+    top = score >= hi
+    if top.sum() == 0 or bottom.sum() == 0:
+        order = np.argsort(score)
+        n = max(1, score.shape[0] // 4)
+        bottom = np.zeros(score.shape[0], dtype=bool)
+        top = np.zeros(score.shape[0], dtype=bool)
+        bottom[order[:n]] = True
+        top[order[-n:]] = True
+    return top, bottom
+
+
+def _calibrate_local_scale(
     *,
-    y_true: np.ndarray,  # (N,)
-    cluster_id: np.ndarray,  # (N,) in [0..G-1]
-    C_cluster: np.ndarray,  # (A,G,K,K)
-    difficulty: np.ndarray,  # (N,)
-    beta: np.ndarray,  # (A,)
+    base_eta: np.ndarray,
+    centered_score: np.ndarray,
+    target_gap_q: float,
+    q_min: float,
+    q_max: float,
+) -> Tuple[float, float, float]:
+    if target_gap_q <= 0.0 or np.allclose(centered_score, 0.0):
+        return 0.0, 0.0, 0.0
+
+    top, bottom = _quartile_masks(centered_score)
+    base_q = np.clip(_sigmoid(base_eta), q_min, q_max)
+
+    def effect_gap(scale: float) -> float:
+        q = np.clip(_sigmoid(base_eta + scale * centered_score), q_min, q_max)
+        delta = q - base_q
+        return float(delta[top].mean() - delta[bottom].mean())
+
+    high = 1.0
+    high_gap = effect_gap(high)
+    while high_gap < target_gap_q and high < 256.0:
+        high *= 2.0
+        high_gap = effect_gap(high)
+
+    low = 0.0
+    for _ in range(40):
+        mid = 0.5 * (low + high)
+        if effect_gap(mid) < target_gap_q:
+            low = mid
+        else:
+            high = mid
+
+    scale = high
+    achieved_effect_gap = effect_gap(scale)
+    q = np.clip(_sigmoid(base_eta + scale * centered_score), q_min, q_max)
+    achieved_total_gap = float(q[top].mean() - q[bottom].mean())
+    return float(scale), achieved_effect_gap, achieved_total_gap
+
+
+def _apply_local_expertise(
+    *,
+    base_eta: np.ndarray,
+    local_scores: np.ndarray,
+    params: Dict[str, Any],
+    cfg: MultiAnnotatorSimConfig,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    q_min = float(cfg.local_expertise_q_min)
+    q_max = float(cfg.local_expertise_q_max)
+    if not 0.0 <= q_min < q_max <= 1.0:
+        raise ValueError(
+            "Require 0 <= local_expertise_q_min < local_expertise_q_max <= 1."
+        )
+
+    eta = base_eta.copy()
+    A = eta.shape[1]
+    scales = np.zeros(A, dtype=np.float32)
+    effect_gaps = np.zeros(A, dtype=np.float32)
+    total_gaps = np.zeros(A, dtype=np.float32)
+    target_gaps = np.zeros(A, dtype=np.float32)
+
+    if not cfg.local_expertise_enabled:
+        return eta, {
+            "scales": scales,
+            "effect_gaps": effect_gaps,
+            "total_gaps": total_gaps,
+            "target_gaps": target_gaps,
+        }
+
+    target_base = max(float(cfg.local_expertise_target_gap_q), 0.0)
+    for a in range(A):
+        if params["spammer_mode"][a] is not None:
+            continue
+        target = target_base * float(params["local_variability"][a])
+        target_gaps[a] = target
+        if target <= 0.0:
+            continue
+        score = local_scores[:, a].astype(np.float64, copy=False)
+        centered = score - float(score.mean())
+        scale, effect_gap, total_gap = _calibrate_local_scale(
+            base_eta=base_eta[:, a],
+            centered_score=centered,
+            target_gap_q=target,
+            q_min=q_min,
+            q_max=q_max,
+        )
+        eta[:, a] = base_eta[:, a] + scale * centered
+        scales[a] = scale
+        effect_gaps[a] = effect_gap
+        total_gaps[a] = total_gap
+
+    return eta, {
+        "scales": scales,
+        "effect_gaps": effect_gaps,
+        "total_gaps": total_gaps,
+        "target_gaps": target_gaps,
+    }
+
+
+def _sample_local_expertise_labels(
+    *,
+    y_true: np.ndarray,
+    classes: np.ndarray,
+    q: np.ndarray,
+    params: Dict[str, Any],
     missing_rate: float,
     missing_value: int,
     seed: int,
 ) -> np.ndarray:
-    """
-    Sample annotator labels given cluster-conditioned confusion matrices.
-
-    Parameters
-    ----------
-    y_true:
-        True labels, shape (N,).
-    cluster_id:
-        Cluster assignments, shape (N,).
-    C_cluster:
-        Confusions, shape (A, G, K, K) where C[a,g,t,:] is a
-        distribution over labels.
-    difficulty:
-        Centered difficulty score per sample, shape (N,). Values above zero
-        correspond to harder-than-average instances, values below zero to
-        easier-than-average instances.
-    beta:
-        Difficulty sensitivity per annotator, shape (A,). Zero disables the
-        difficulty adjustment for that annotator.
-    missing_rate:
-        Bernoulli missing probability per (i,a).
-    missing_value:
-        Value used for missing labels.
-    seed:
-        RNG seed.
-
-    Returns
-    -------
-    z:
-        Noisy labels, shape (N, A), dtype int64.
-    """
     rng = np.random.default_rng(seed)
-
     y_true = _as_1d_int_labels(y_true, name="y_true")
-    cluster_id = np.asarray(cluster_id, dtype=np.int64)
-    difficulty = np.asarray(difficulty, dtype=np.float32)
-    beta = np.asarray(beta, dtype=np.float32)
+    N, A = q.shape
+    K = len(classes)
+    chance = 1.0 / float(K)
 
-    N = y_true.shape[0]
-    A, G, K, _ = C_cluster.shape
-
-    if difficulty.shape != (N,):
-        raise ValueError(
-            "difficulty must have shape (N,), got "
-            f"{difficulty.shape} for N={N}."
-        )
-    if beta.shape != (A,):
-        raise ValueError(
-            f"beta must have shape (A,), got {beta.shape} for A={A}."
-        )
-
+    class_to_pos = {int(cls): pos for pos, cls in enumerate(classes)}
+    y_pos = np.asarray([class_to_pos[int(y)] for y in y_true], dtype=np.int64)
     z = np.full((N, A), missing_value, dtype=np.int64)
 
     for a in range(A):
         obs = rng.random(N) >= missing_rate
-        idx = np.where(obs)[0]
+        idx = np.flatnonzero(obs)
         if idx.size == 0:
             continue
 
-        t = y_true[idx]
-        g = cluster_id[idx]
-        probs = C_cluster[a, g, t].astype(np.float64, copy=True)  # (n_obs, K)
+        mode = params["spammer_mode"][a]
+        if mode == "uniform":
+            z[idx, a] = rng.choice(classes, size=idx.size)
+            continue
+        if mode == "single_class":
+            z[idx, a] = classes[int(params["single_class"][a])]
+            continue
 
-        beta_a = float(beta[a])
-        if beta_a > 0.0:
-            diff = difficulty[idx].astype(np.float64, copy=False)
-            chance = 1.0 / float(K)
-            p0 = probs[np.arange(idx.size), t]
+        p_correct = chance + (1.0 - chance) * q[idx, a]
+        is_correct = rng.random(idx.size) < p_correct
+        labels = np.empty(idx.size, dtype=np.int64)
+        labels[is_correct] = y_true[idx[is_correct]]
 
-            # Apply difficulty to the accuracy margin above chance level and
-            # re-normalize the multiplier so its mean is one over the current
-            # sample set. This keeps marginal annotator quality close to the
-            # configured baseline while introducing heteroscedastic noise.
-            factor = np.exp(-beta_a * diff)
-            factor /= np.clip(factor.mean(), 1e-12, None)
-
-            p_eff = chance + (p0 - chance) * factor
-            p_eff = np.clip(p_eff, chance, 1.0 - 1e-12)
-
-            wrong = probs.copy()
-            wrong[np.arange(idx.size), t] = 0.0
-            wrong_sum = wrong.sum(axis=1, keepdims=True)
-            fallback = np.full_like(wrong, 1.0 / max(K - 1, 1))
-            fallback[np.arange(idx.size), t] = 0.0
-
-            denom = np.where(wrong_sum > 1e-12, wrong_sum, 1.0)
-            wrong_norm = np.where(wrong_sum > 1e-12, wrong / denom, fallback)
-            probs = wrong_norm * (1.0 - p_eff)[:, None]
-            probs[np.arange(idx.size), t] = p_eff
-
-        u = rng.random(idx.size)
-        cdf = np.cumsum(probs, axis=1)
-        z[idx, a] = (cdf < u[:, None]).sum(axis=1).astype(np.int64)
+        wrong_local = np.flatnonzero(~is_correct)
+        if wrong_local.size:
+            if K <= 1:
+                labels[wrong_local] = y_true[idx[wrong_local]]
+            else:
+                offsets = rng.integers(1, K, size=wrong_local.size)
+                wrong_pos = (y_pos[idx[wrong_local]] + offsets) % K
+                labels[wrong_local] = classes[wrong_pos]
+        z[idx, a] = labels
 
     return z
+
+
+def _format_float(value: float) -> str:
+    if not np.isfinite(value):
+        return "nan"
+    return f"{value:.4f}"
+
+
+def _print_simulation_diagnostics(
+    *,
+    z: np.ndarray,
+    y_true: np.ndarray,
+    classes: np.ndarray,
+    params: Dict[str, Any],
+    cfg: MultiAnnotatorSimConfig,
+    local_scores: Optional[np.ndarray],
+    local_diag: Dict[str, Any],
+) -> None:
+    print(
+        "[local_expertise_sim] "
+        f"classes={len(classes)} annotators={z.shape[1]} "
+        f"difficulty={bool(cfg.use_difficulty)} "
+        f"local_enabled={bool(cfg.local_expertise_enabled)} "
+        f"kind={cfg.local_expertise_kind} "
+        f"target_gap_q={float(cfg.local_expertise_target_gap_q):.4f}"
+    )
+
+    if not cfg.local_expertise_enabled or local_scores is None:
+        print("[local_expertise_sim] local expertise disabled.")
+        return
+
+    chance = 1.0 / float(len(classes))
+    normal = np.array([m is None for m in params["spammer_mode"]], dtype=bool)
+    sampled_gaps = np.full(z.shape[1], np.nan, dtype=np.float64)
+    present = z != cfg.missing_value
+    correct = (z == y_true[:, None]) & present
+
+    for a in np.flatnonzero(normal):
+        top, bottom = _quartile_masks(local_scores[:, a])
+        top_present = top & present[:, a]
+        bottom_present = bottom & present[:, a]
+        if top_present.sum() == 0 or bottom_present.sum() == 0:
+            continue
+        acc_top = correct[top_present, a].mean()
+        acc_bottom = correct[bottom_present, a].mean()
+        sampled_gaps[a] = (acc_top - acc_bottom) / max(1.0 - chance, 1e-12)
+
+    effect_gaps = np.asarray(local_diag["effect_gaps"], dtype=float)
+    total_gaps = np.asarray(local_diag["total_gaps"], dtype=float)
+    target_gaps = np.asarray(local_diag["target_gaps"], dtype=float)
+    norm_idx = np.flatnonzero(normal)
+    if norm_idx.size == 0:
+        print("[local_expertise_sim] no normal annotators for local diagnostics.")
+        return
+
+    print(
+        "[local_expertise_sim] gap_q normal annotators "
+        f"target_mean={_format_float(np.nanmean(target_gaps[norm_idx]))} "
+        f"effect_mean={_format_float(np.nanmean(effect_gaps[norm_idx]))} "
+        f"effect_median={_format_float(np.nanmedian(effect_gaps[norm_idx]))} "
+        f"total_mean={_format_float(np.nanmean(total_gaps[norm_idx]))} "
+        f"sampled_mean={_format_float(np.nanmean(sampled_gaps[norm_idx]))} "
+        f"sampled_median={_format_float(np.nanmedian(sampled_gaps[norm_idx]))}"
+    )
+
+    type_names = np.asarray(params["type_names"], dtype=object)
+    for type_name in sorted({str(t) for t in type_names[norm_idx]}):
+        mask = normal & (type_names == type_name)
+        print(
+            "[local_expertise_sim] "
+            f"type={type_name} n={int(mask.sum())} "
+            f"target={_format_float(np.nanmean(target_gaps[mask]))} "
+            f"effect={_format_float(np.nanmean(effect_gaps[mask]))} "
+            f"sampled={_format_float(np.nanmean(sampled_gaps[mask]))}"
+        )
 
 
 def simulate_multi_annotator_labels_from_features(
@@ -966,62 +875,34 @@ def simulate_multi_annotator_labels_from_features(
     y_true: np.ndarray,
     cfg: MultiAnnotatorSimConfig,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """
-    Simulate multi-annotator labels z for a dataset split.
-
-    Parameters
-    ----------
-    X_features:
-        Feature matrix used for instance dependence, shape (N, D).
-        Typically this is your `np_arrays["X_train"]` when you run with
-        an embedding model.
-    y_true:
-        True labels, shape (N,).
-    cfg:
-        Multi-annotator simulation configuration.
-
-    Returns
-    -------
-    z:
-        Simulated noisy labels, shape (N, A).
-    info:
-        Debug info: type_ids, n_classes, cluster_id, C_base (C_cluster omitted by default).
-    """
     if cfg.n_annotators <= 0:
         raise ValueError("cfg.n_annotators must be > 0.")
     if len(cfg.types) == 0:
         raise ValueError("cfg.types must not be empty.")
+    if cfg.local_expertise_kind not in {"feature", "class"}:
+        raise ValueError("local_expertise_kind must be 'feature' or 'class'.")
+    if (
+        cfg.local_expertise_kind == "feature"
+        and cfg.local_expertise_prototype_sampling != "class_balanced"
+    ):
+        raise ValueError("Only class_balanced prototype sampling is supported.")
+    if cfg.local_expertise_kind == "feature" and cfg.local_expertise_score != "rbf_max":
+        raise ValueError("Only rbf_max local expertise scoring is supported.")
 
     X_sim = _preprocess_simulation_features(
         X_features, mode=cfg.feature_preprocess
     )
     y_true = _as_1d_int_labels(y_true, name="y_true")
-    K = int(np.unique(y_true).size)
-
-    if cfg.use_clusters:
-        cluster_id = (
-            MiniBatchKMeans(
-                n_clusters=cfg.n_clusters,
-                random_state=cfg.kmeans_seed,
-                max_iter=cfg.k_means_max_iter,
-                batch_size=cfg.k_means_batch_size,
-                compute_labels=True,
-            )
-            .fit(X_sim)
-            .labels_
-        )
-        G = int(cfg.n_clusters)
-    else:
-        cluster_id = np.zeros(y_true.shape[0], dtype=np.int64)
-        G = 1
+    classes = np.unique(y_true).astype(np.int64, copy=False)
+    K = int(classes.size)
+    if K <= 0:
+        raise ValueError("y_true must contain at least one class.")
 
     knn_probs = None
-    if cfg.use_difficulty or cfg.use_knn_ambiguity:
+    if cfg.use_difficulty:
         knn_probs = compute_knn_label_distribution(
             X_sim, y_true, n_classes=K, k=cfg.difficulty_k
         )
-
-    if cfg.use_difficulty:
         difficulty_raw = compute_knn_difficulty(
             knn_probs,
             n_classes=K,
@@ -1035,19 +916,6 @@ def simulate_multi_annotator_labels_from_features(
         difficulty_mean = 0.0
         difficulty = difficulty_raw
 
-    if cfg.use_knn_ambiguity:
-        ambiguity_templates, ambiguity_counts = build_cluster_ambiguity_templates(
-            knn_probs=knn_probs,
-            cluster_id=cluster_id,
-            y_true=y_true,
-            n_classes=K,
-            n_clusters=G,
-            min_samples=cfg.knn_ambiguity_min_samples,
-        )
-    else:
-        ambiguity_templates = None
-        ambiguity_counts = None
-
     type_ids = allocate_type_ids(
         cfg.types, cfg.n_annotators, allocation=cfg.allocation, seed=cfg.seed
     )
@@ -1055,47 +923,95 @@ def simulate_multi_annotator_labels_from_features(
         cfg.types, type_ids, n_classes=K, seed=cfg.seed + 11
     )
 
-    C_base = sample_global_confusions(
-        n_classes=K,
-        p=params["p"],
-        s=params["s"],
-        spammer_mode=params["spammer_mode"],
-        single_class=params["single_class"],
-        seed=cfg.seed + 23,
+    N = y_true.shape[0]
+    A = cfg.n_annotators
+    base_eta = np.zeros((N, A), dtype=np.float64)
+    for a in range(A):
+        if params["spammer_mode"][a] is None:
+            base_eta[:, a] = _logit(float(params["q"][a])) - (
+                float(params["beta"][a]) * difficulty
+            )
+
+    prototype_indices = np.full(
+        (A, int(max(cfg.local_expertise_n_prototypes, 1))),
+        -1,
+        dtype=np.int64,
     )
-    C_cluster = sample_cluster_confusions(
-        C_base=C_base,
-        kappa=params["kappa"],
-        n_clusters=G,
-        ambiguity_templates=ambiguity_templates,
-        ambiguity_blend=cfg.knn_ambiguity_blend,
-        use_ambiguity=np.array(
-            [mode is None for mode in params["spammer_mode"]], dtype=bool
-        ),
-        seed=cfg.seed + 37,
+    class_expertise_classes = np.full(
+        (A, int(max(cfg.local_expertise_n_classes, 1))),
+        -1,
+        dtype=np.int64,
+    )
+    if cfg.local_expertise_enabled:
+        if cfg.local_expertise_kind == "class":
+            class_expertise_classes = _select_class_expertise_classes(
+                classes=classes,
+                n_annotators=A,
+                n_classes_per_annotator=int(cfg.local_expertise_n_classes),
+                spammer_mode=params["spammer_mode"],
+                seed=cfg.seed + 23,
+            )
+            local_scores = _compute_class_expertise_scores(
+                y_true=y_true,
+                class_indices=class_expertise_classes,
+            )
+        else:
+            prototype_indices = _select_local_expertise_prototypes(
+                y_true=y_true,
+                n_annotators=A,
+                n_prototypes=int(cfg.local_expertise_n_prototypes),
+                spammer_mode=params["spammer_mode"],
+                seed=cfg.seed + 23,
+            )
+            local_scores = _compute_local_expertise_scores(
+                X=X_sim,
+                prototype_indices=prototype_indices,
+                bandwidth_quantile=float(cfg.local_expertise_bandwidth_quantile),
+            )
+    else:
+        local_scores = np.zeros((N, A), dtype=np.float32)
+
+    eta, local_diag = _apply_local_expertise(
+        base_eta=base_eta,
+        local_scores=local_scores,
+        params=params,
+        cfg=cfg,
+    )
+    q = np.clip(
+        _sigmoid(eta),
+        float(cfg.local_expertise_q_min),
+        float(cfg.local_expertise_q_max),
+    ).astype(np.float32)
+
+    z = _sample_local_expertise_labels(
+        y_true=y_true,
+        classes=classes,
+        q=q,
+        params=params,
+        missing_rate=float(cfg.missing_rate),
+        missing_value=int(cfg.missing_value),
+        seed=cfg.seed + 41,
     )
 
-    z = simulate_labels(
+    _print_simulation_diagnostics(
+        z=z,
         y_true=y_true,
-        cluster_id=cluster_id,
-        C_cluster=C_cluster,
-        difficulty=difficulty,
-        beta=params["beta"],
-        missing_rate=cfg.missing_rate,
-        missing_value=cfg.missing_value,
-        seed=cfg.seed + 41,
+        classes=classes,
+        params=params,
+        cfg=cfg,
+        local_scores=local_scores if cfg.local_expertise_enabled else None,
+        local_diag=local_diag,
     )
 
     info = {
         "n_classes": K,
-        "n_clusters": G,
-        "cluster_id": cluster_id,
+        "classes": classes,
         "type_ids": params["type_ids"],
+        "type_names": params["type_names"],
         "q": params["q"],
         "p": params["p"],
-        "s": params["s"],
-        "kappa": params["kappa"],
         "beta": params["beta"],
+        "local_variability": params["local_variability"],
         "spammer_mode": params["spammer_mode"],
         "single_class": params["single_class"],
         "feature_preprocess": cfg.feature_preprocess,
@@ -1103,9 +1019,13 @@ def simulate_multi_annotator_labels_from_features(
         "difficulty_centered": difficulty,
         "difficulty_mean": difficulty_mean,
         "knn_probs": knn_probs,
-        "ambiguity_counts": ambiguity_counts,
-        "knn_ambiguity_blend": float(cfg.knn_ambiguity_blend),
-        "C_base": C_base,  # global confusions; small enough to keep
+        "local_expertise_enabled": bool(cfg.local_expertise_enabled),
+        "local_expertise_kind": cfg.local_expertise_kind,
+        "local_expertise_target_gap_q": float(
+            cfg.local_expertise_target_gap_q
+        ),
+        "local_expertise_prototype_indices": prototype_indices,
+        "local_expertise_classes": class_expertise_classes,
     }
     return z, info
 
@@ -1164,8 +1084,8 @@ def ensure_z_train_cached(
     - `z_train` cache lookup is independent of the embedding model used to
       create X_train.
     - On a cache miss, you *do* need features (X_train_features) to simulate
-      instance dependence. After the first run, you can switch embedders freely
-      and z_train will still load.
+      difficulty and local expertise. After the first run, you can switch
+      embedders freely and z_train will still load.
 
     Parameters
     ----------
@@ -1173,8 +1093,8 @@ def ensure_z_train_cached(
         Stable dataset identifier (e.g., hash of spec_fingerprint(spec)).
         Must not depend on the embedding model.
     X_train_features:
-        Feature matrix (N,D) used for clustering *only if cache miss*.
-        If cache exists, this can be None.
+        Feature matrix (N,D) used for simulation *only if cache miss*. If cache
+        exists, this can be None.
     y_train:
         True labels (N,).
     cfg:
@@ -1208,6 +1128,10 @@ def ensure_z_train_cached(
                 info = json.loads(meta_path.read_text(encoding="utf-8"))
             except Exception:
                 info = {}
+        print(
+            "[local_expertise_sim] loaded cached z_train; diagnostics are "
+            "printed only on cache miss."
+        )
         return z, info
 
     # Cache miss -> simulate
@@ -1240,7 +1164,9 @@ def ensure_z_train_cached(
             "embedder_fingerprint_at_creation": to_plain(embedder_fingerprint),
             "sim_info_light": {
                 "n_classes": int(sim_info.get("n_classes", -1)),
-                "n_clusters": int(sim_info.get("n_clusters", -1)),
+                "local_expertise_enabled": bool(
+                    sim_info.get("local_expertise_enabled", False)
+                ),
             },
         }
         meta_path.write_text(

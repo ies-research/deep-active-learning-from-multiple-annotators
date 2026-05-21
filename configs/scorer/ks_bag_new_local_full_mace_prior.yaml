@@ -1,6 +1,6 @@
 _target_: src.scorer.KernelSmoothedBayesianAnnotatorGainNew
 
-preset: global_accuracy_uniform_fixed_prior
+preset: local_accuracy_uniform_global_accuracy_uniform_prior
 utility: bias_corrected_accuracy
 class_prior: classifier
 class_prior_kernel: rbf
@@ -18,14 +18,14 @@ laplace_include_bias: true
 laplace_predictive_samples: 32
 laplace_variance_scale: 1.0
 difficulty_gate_power: 0.0001
-evidence_weight: none
+evidence_weight: entropy
 kernel: rbf
 gamma: self_tuning
 bandwidth_reference: all
 bandwidth_reference_sample: 2000
 bandwidth_knn_k: 500
 local_kernel_top_k: null
-local_kernel_weighting: constant
+local_kernel_weighting: kernel
 budget_aware_locality: false
 budget_T0: 20.0
 budget_rho: 0.1
@@ -39,10 +39,10 @@ use_annotator_embeddings: false
 annotator_kernel: rbf
 annotator_gamma: self_tuning
 fixed_prior_accuracy: 0.9
-fixed_prior_strength: 1.0
-prior_strength: 2
+fixed_prior_strength: 5.0
+prior_strength: 3.0
 prior_observations: same
-n_mc_samples: 10
+n_mc_samples: 5
 sample_class_prior: false
 sample_channel: true
 utility_aggregation: mean

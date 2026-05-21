@@ -10,6 +10,11 @@ from ._diversity import (
 from ._random import RandomPairScorer
 from ._bam import BetaModelPairScorer
 from ._budget_aware_local_agreement import BudgetAwareLocalAgreementScorer
+from ._global_quality import (
+    AgreementGlobalPairScorer,
+    CrowdLabGlobalPairScorer,
+    LabelQualityGlobalPairScorer,
+)
 from ._ks_bag import KernelSmoothedBayesianAnnotatorGain
 from ._ks_bag_new import KernelSmoothedBayesianAnnotatorGainNew
 from ._local_response_bias_mixture import LocalResponseBiasMixtureGain
@@ -29,6 +34,9 @@ __all__ = [
     "RandomPairScorer",
     "BetaModelPairScorer",
     "BudgetAwareLocalAgreementScorer",
+    "AgreementGlobalPairScorer",
+    "CrowdLabGlobalPairScorer",
+    "LabelQualityGlobalPairScorer",
     "KernelSmoothedBayesianAnnotatorGain",
     "KernelSmoothedBayesianAnnotatorGainNew",
     "LocalResponseBiasMixtureGain",

@@ -4,36 +4,27 @@ types:
     proportion: 0.10
     q_mean: 0.85
     q_std: 0.03
-    s_mean: 90
-    s_std: 0.20
-    kappa_mean: 85
-    kappa_std: 0.20
     difficulty_beta_mean: 0.85
     difficulty_beta_std: 0.15
+    local_variability: 0.6
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: competent
     proportion: 0.50
     q_mean: 0.70
     q_std: 0.06
-    s_mean: 40
-    s_std: 0.28
-    kappa_mean: 36
-    kappa_std: 0.28
     difficulty_beta_mean: 1.45
     difficulty_beta_std: 0.20
+    local_variability: 1.0
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: novice
     proportion: 0.20
     q_mean: 0.45
     q_std: 0.08
-    s_mean: 18
-    s_std: 0.36
-    kappa_mean: 16
-    kappa_std: 0.36
     difficulty_beta_mean: 2.20
     difficulty_beta_std: 0.25
+    local_variability: 1.3
 
   - _target_: src.dataset.AnnotatorTypeConfig
     name: spammer_uniform

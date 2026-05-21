@@ -1,0 +1,5 @@
+_target_: src.scorer.CrowdLabGlobalPairScorer
+model_weight: 1.0
+prior_quality: 0.5
+prior_strength: 1.0
+n_iter: 5

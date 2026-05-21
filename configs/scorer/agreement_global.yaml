@@ -1,0 +1,3 @@
+_target_: src.scorer.AgreementGlobalPairScorer
+prior_quality: 0.5
+prior_strength: 1.0

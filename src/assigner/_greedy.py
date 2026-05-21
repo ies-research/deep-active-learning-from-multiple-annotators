@@ -87,16 +87,28 @@ class GreedyPairAssigner(PairAssigner):
         soft_coverage_lambda=0.0,
         max_per_sample=None,
         max_per_annotator=None,
+        max_per_annotator_mode="fixed",
+        max_per_annotator_multiplier=1.0,
         explore_top_m=None,
+        tie_break="first",
         random_state=None,
     ):
         selection = str(selection)
         coverage = str(coverage)
+        max_per_annotator_mode = str(max_per_annotator_mode)
+        tie_break = str(tie_break)
 
         if selection not in {"greedy", "epsilon_greedy", "softmax"}:
             raise ValueError(f"Invalid selection={selection!r}.")
         if coverage not in {"none", "hard", "soft"}:
             raise ValueError(f"Invalid coverage={coverage!r}.")
+        if max_per_annotator_mode not in {"fixed", "relative_batch_share"}:
+            raise ValueError(
+                "max_per_annotator_mode must be one of "
+                "{'fixed', 'relative_batch_share'}."
+            )
+        if tie_break not in {"first", "random"}:
+            raise ValueError("tie_break must be one of {'first', 'random'}.")
 
         eps_max = float(epsilon_max)
         eps_min = eps_max if epsilon_min is None else float(epsilon_min)
@@ -115,6 +127,8 @@ class GreedyPairAssigner(PairAssigner):
             raise ValueError("max_per_sample must be positive or None.")
         if max_per_annotator is not None and int(max_per_annotator) <= 0:
             raise ValueError("max_per_annotator must be positive or None.")
+        if float(max_per_annotator_multiplier) <= 0.0:
+            raise ValueError("max_per_annotator_multiplier must be > 0.")
         if explore_top_m is not None and int(explore_top_m) <= 0:
             raise ValueError("explore_top_m must be positive or None.")
 
@@ -127,9 +141,12 @@ class GreedyPairAssigner(PairAssigner):
         self.max_per_annotator = (
             None if max_per_annotator is None else int(max_per_annotator)
         )
+        self.max_per_annotator_mode = max_per_annotator_mode
+        self.max_per_annotator_multiplier = float(max_per_annotator_multiplier)
         self.explore_top_m = (
             None if explore_top_m is None else int(explore_top_m)
         )
+        self.tie_break = tie_break
         self.random_state = check_random_state(random_state)
 
         # Call-based schedules (stateful)
@@ -192,6 +209,10 @@ class GreedyPairAssigner(PairAssigner):
             remaining = self._coerce_annotator_remaining(
                 annotator_indices, kwargs.get("annotator_remaining_counts")
             )
+            max_per_annotator = self._resolve_max_per_annotator(
+                budget=budget,
+                n_annotators=A,
+            )
 
             # Per-batch counts (coverage/caps)
             c_s = np.zeros(S, dtype=int)
@@ -203,8 +224,8 @@ class GreedyPairAssigner(PairAssigner):
                 # Apply caps by masking feasibility
                 if self.max_per_sample is not None:
                     feasible &= c_s[:, None] < self.max_per_sample
-                if self.max_per_annotator is not None:
-                    feasible &= c_a[None, :] < self.max_per_annotator
+                if max_per_annotator is not None:
+                    feasible &= c_a[None, :] < max_per_annotator
                 if remaining is not None:
                     feasible &= c_a[None, :] < remaining[None, :]
 
@@ -229,8 +250,8 @@ class GreedyPairAssigner(PairAssigner):
                     score[~feasible] = -np.inf
 
                 if self.selection == "greedy":
-                    flat_idx = int(np.argmax(score))
-                    if not np.isfinite(score.ravel()[flat_idx]):
+                    flat_idx = self._argmax(score, rng)
+                    if flat_idx is None:
                         break
 
                 elif self.selection == "epsilon_greedy":
@@ -239,8 +260,8 @@ class GreedyPairAssigner(PairAssigner):
                             score, feasible, rng
                         )
                     else:
-                        flat_idx = int(np.argmax(score))
-                        if not np.isfinite(score.ravel()[flat_idx]):
+                        flat_idx = self._argmax(score, rng)
+                        if flat_idx is None:
                             break
 
                 else:  # softmax
@@ -272,6 +293,30 @@ class GreedyPairAssigner(PairAssigner):
             annotator_remaining_counts,
             name="annotator_remaining_counts",
         )
+
+    def _resolve_max_per_annotator(self, *, budget: int, n_annotators: int):
+        if self.max_per_annotator_mode == "fixed":
+            return self.max_per_annotator
+        if n_annotators <= 0:
+            return None
+        cap = int(
+            np.ceil(
+                self.max_per_annotator_multiplier
+                * float(max(int(budget), 0))
+                / float(n_annotators)
+            )
+        )
+        return max(cap, 1)
+
+    def _argmax(self, score, rng):
+        flat = np.asarray(score, dtype=float).ravel()
+        max_score = np.max(flat)
+        if not np.isfinite(max_score):
+            return None
+        if self.tie_break == "first":
+            return int(np.argmax(flat))
+        candidates = np.flatnonzero(flat == max_score)
+        return int(rng.choice(candidates))
 
     def _sample_uniform_or_topm(self, score, feasible, rng):
         feas_idx = np.flatnonzero(feasible.ravel())

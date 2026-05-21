@@ -1,8 +1,8 @@
 _target_: src.scorer.KernelSmoothedBayesianAnnotatorGain
 
 # Accuracy prior
-accuracy_mean: 0.999
-accuracy_strength: 0.01 # to be investigated
+accuracy_mean: per_annotator_observed
+accuracy_strength: 1.0 # to be investigated
 
 # Correctness mode
 correctness_mode: "classifier"

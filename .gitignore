@@ -1,6 +1,11 @@
 # Individual paths
 manifests/*.jsonl
 .codex
+.vscode/
+.pytest_cache/
+figures/*
+notebooks/*
+tests/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

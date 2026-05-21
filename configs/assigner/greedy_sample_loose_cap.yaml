@@ -1,0 +1,6 @@
+defaults:
+  - greedy_sample
+  - _self_
+
+max_per_annotator_mode: relative_batch_share
+max_per_annotator_multiplier: 4.0
