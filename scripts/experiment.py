@@ -129,8 +129,11 @@ def _maybe_print_budget_aware_local_agreement_diagnostics(scorer, cycle_idx):
         f"combination={responsive_combination}",
         f"gated_ts={getattr(scorer, 'last_gated_thompson_mode_', 'unknown')}",
         f"evidence={getattr(scorer, 'last_evidence_weighting_', getattr(scorer, 'evidence_weighting', 'unknown'))}",
+        f"agreement={getattr(scorer, 'last_agreement_mode_', getattr(scorer, 'agreement_mode', 'unknown'))}",
+        f"constraint_pressure={getattr(scorer, 'last_constraint_pressure_', 'unknown')}",
         f"rho_correction={getattr(scorer, 'last_use_rho_correction_', getattr(scorer, 'use_rho_correction', 'unknown'))}",
         f"score_mode={getattr(scorer, 'score_mode', 'unknown')}",
+        f"ucb={getattr(scorer, 'last_ucb_mode_', getattr(scorer, 'ucb_mode', 'unknown'))}",
         f"bias={getattr(scorer, 'bias_model_correction', 'unknown')}",
         f"finite_pairs={n_finite_pairs}/{n_pairs}",
     ]
@@ -1017,6 +1020,10 @@ def experiment(cfg):
         current_pair_budget = (
             cfg.al.init_pair_budget if cycle_idx == 0 else cfg.al.actual_pair_budget
         )
+        remaining_pair_budget = current_pair_budget + max(
+            int(cfg.al.n_cycles) - cycle_idx - 1,
+            0,
+        ) * int(cfg.al.actual_pair_budget)
         current_sample_budget = int(
             -(-current_pair_budget // assignment_per_sample_ratio)
         )
@@ -1038,6 +1045,11 @@ def experiment(cfg):
                 np.maximum(annotator_total_caps - annotator_label_counts, 0),
             )
         annotator_indices = np.flatnonzero(annotator_remaining_counts > 0)
+        constraint_pressure = current_assigner.constraint_pressure(
+            budget=current_pair_budget,
+            annotator_indices=annotator_indices,
+            annotator_remaining_counts=annotator_remaining_counts,
+        )
 
         # Select candidate samples.
         is_cand = is_unlabeled(y_pool, missing_label=cfg.missing_label)
@@ -1047,6 +1059,14 @@ def experiment(cfg):
             else is_cand.any(axis=-1)
         )
         candidates = np.flatnonzero(is_cand)
+        if len(candidates) == 0:
+            print(
+                "[active_learning] "
+                f"cycle={cycle_idx} has no candidate samples left "
+                f"(fully_unlabeled_cand={cfg.al.fully_unlabeled_cand}); "
+                "stopping early."
+            )
+            break
 
         # Select samples. -----------------------------------------------------
         y_agg = majority_vote(y_pool, classes=classes, missing_label=cfg.missing_label)
@@ -1077,6 +1097,8 @@ def experiment(cfg):
                     np.ix_(sample_indices, annotator_indices)
                 ],
                 budget_total=total_pair_budget,
+                remaining_budget=remaining_pair_budget,
+                constraint_pressure=constraint_pressure,
             )
             budget_locality = getattr(
                 current_scorer,
@@ -1101,20 +1123,13 @@ def experiment(cfg):
             )
 
         # Assign annotators to samples given utilities. -----------------------
-        remaining_budget = (
-            cfg.al.n_cycles * cfg.al.actual_pair_budget
-            - cycle_idx * cfg.al.actual_pair_budget
-        )
-        pair_indices = call_func(
-            f_callable=current_assigner,
+        pair_indices = current_assigner(
             utilities=utilities,
             sample_indices=sample_indices,
             annotator_indices=annotator_indices,
             budget=current_pair_budget,
             annotator_label_counts=annotator_label_counts,
             annotator_remaining_counts=annotator_remaining_counts,
-            remaining_budget=remaining_budget,
-            ignore_var_keyword=True,
         )
 
         _maybe_plot_utility_tsne(

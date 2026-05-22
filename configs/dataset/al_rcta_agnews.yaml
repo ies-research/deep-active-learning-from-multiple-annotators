@@ -1,0 +1,10 @@
+_target_: src.dataset.HFDatasetSpec
+source: ${paths.master_dir}/al_rcta_agnews_test3000
+source_kind: from_disk
+cache_dir: ${paths.dataset_cache_dir}
+train_splits: [train]
+test_split: test
+x_key: text
+y_key: label
+z_key: z
+trust_remote_code: false
