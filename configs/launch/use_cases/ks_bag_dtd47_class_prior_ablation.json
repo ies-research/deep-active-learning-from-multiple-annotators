@@ -118,6 +118,18 @@
             "simplicity_rank": "1"
           }
         },
+        "uniform": {
+          "overrides": [
+            "scorer.actual.class_prior=uniform",
+            "scorer.actual.class_prior_lambda=0.0",
+            "scorer.actual.use_ess_class_prior=false",
+            "scorer.actual.sample_class_prior=false"
+          ],
+          "tags": {
+            "ablation_block": "class_prior_source",
+            "simplicity_rank": "1"
+          }
+        },
         "kernel": {
           "overrides": [
             "scorer.actual.class_prior=kernel",
