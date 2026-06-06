@@ -2,4 +2,4 @@ defaults:
   - blga_gated_randomized_ucb
   - _self_
 
-locality_mode: global
+gate_constraint_coupling: none

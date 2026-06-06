@@ -1,0 +1,109 @@
+{
+  "name": "blga_dtd47_scenario_ablation",
+  "description": "Compact Study 1 DTD47 scenario grid for random, global-only BLGA, and the selected local randomized-UCB BLGA",
+  "common_overrides": [
+    "paths=default",
+    "pipeline=default",
+    "dataset=dtd47",
+    "al=dtd47",
+    "embedder@classification_embedder=clip",
+    "embedder@simulation_embedder=dinov2",
+    "module=mlp",
+    "scheduler=step_ratio_1",
+    "sample@sample.init=random",
+    "sample@sample.actual=random",
+    "scorer@scorer.init=random",
+    "assigner@assigner.init=quota_sample",
+    "assigner@assigner.actual=optimal_sample_loose_cap",
+    "hydra/hydra_logging=disabled",
+    "hydra/job_logging=disabled",
+    "mlflow_write_jitter_max_seconds=60.0",
+    "device=cpu",
+    "missing_label=-1",
+    "exit_after_simulation=false",
+    "experiment_name=blga_dtd47_scenario_ablation",
+    "training=default",
+    "al.annotator_capacity.mode=none",
+    "al.annotator_capacity.multiplier=1.0"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "scenario",
+      "type": "choices",
+      "values": {
+        "balanced_medium": {
+          "overrides": ["simulation=dtd47_balanced_medium"],
+          "tags": {"annotator_scenario": "balanced_medium"}
+        },
+        "novice_heavy": {
+          "overrides": ["simulation=dtd47_novice_heavy"],
+          "tags": {"annotator_scenario": "novice_heavy"}
+        },
+        "spammer_contaminated": {
+          "overrides": ["simulation=dtd47_spammer_contaminated"],
+          "tags": {"annotator_scenario": "spammer_contaminated"}
+        },
+        "equal_global_feature_specialists": {
+          "overrides": ["simulation=dtd47_equal_global_feature_specialists"],
+          "tags": {"annotator_scenario": "equal_global_feature_specialists"}
+        }
+      }
+    },
+    {
+      "name": "classifier",
+      "type": "choices",
+      "values": {
+        "annot_mix_gating": {
+          "overrides": ["classifier=annot_mix_gating"],
+          "tags": {"crowd_classifier": "annot_mix_gating"}
+        },
+        "geo_reg_f": {
+          "overrides": ["classifier=geo_reg_f"],
+          "tags": {"crowd_classifier": "geo_reg_f"}
+        }
+      }
+    },
+    {
+      "name": "constraint",
+      "type": "choices",
+      "values": {
+        "quota_cap_1x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=1.0"],
+          "tags": {"cap_multiplier": "1.0", "constraint_pressure": "quota_like"}
+        },
+        "moderate_cap_2x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=2.0"],
+          "tags": {"cap_multiplier": "2.0", "constraint_pressure": "moderate"}
+        },
+        "loose_cap_4x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=4.0"],
+          "tags": {"cap_multiplier": "4.0", "constraint_pressure": "loose"}
+        }
+      }
+    },
+    {
+      "name": "method",
+      "type": "choices",
+      "values": {
+        "random": {
+          "overrides": ["scorer@scorer.actual=random"],
+          "tags": {"method_family": "random"}
+        },
+        "global_randomized_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_global"],
+          "tags": {"method_family": "blga", "ablation": "global_only"}
+        },
+        "local_randomized_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_gated_randomized_ucb"],
+          "tags": {"method_family": "blga", "selected_variant": "main"}
+        }
+      }
+    }
+  ]
+}

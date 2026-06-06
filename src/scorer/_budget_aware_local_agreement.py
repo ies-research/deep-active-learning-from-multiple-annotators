@@ -14,6 +14,10 @@ def _l2_normalize(X: np.ndarray, eps: float) -> np.ndarray:
     return X / np.maximum(norm, eps)
 
 
+_DEFAULT_RANDOM_UCB_VALUES = (0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0)
+_DEFAULT_RANDOM_UCB_PROBS = (0.35, 0.30, 0.18, 0.09, 0.05, 0.02, 0.01)
+
+
 class BudgetAwareLocalAgreementScorer(PairScorer):
     """Budget-aware local Beta scorer for classifier-conditioned agreement.
 
@@ -28,11 +32,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
 
     Parameters
     ----------
-    score_mode : {"mean", "thompson", "ucb"}, default="thompson"
+    score_mode : {"mean", "thompson", "ucb", "randomized_ucb"}, default="thompson"
         How the local Beta posterior is converted to a utility. ``"mean"`` uses
         the posterior mean and is deterministic. ``"thompson"`` draws from the
         posterior and averages ``thompson_samples`` draws.
-        ``"ucb"`` uses deterministic posterior optimism.
+        ``"ucb"`` uses deterministic posterior optimism. ``"randomized_ucb"``
+        draws non-negative optimism multipliers for each batch.
     thompson_samples : int, default=1
         Number of posterior samples used when ``score_mode="thompson"``. A value
         of 1 is standard Thompson sampling. Larger values smooth the random
@@ -46,9 +51,24 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
     local_exploration_weight : float, default=1.0
         Number of local posterior standard deviations added in UCB mode.
         In gated mode this affects only the local component.
+    random_ucb_values : array-like of float or None, default=None
+        Discrete non-negative optimism multipliers used when
+        ``score_mode="randomized_ucb"``. If ``None``, a conservative default grid
+        from 0 to 1 is used. The multipliers are additionally scaled by
+        ``global_exploration_weight`` and ``local_exploration_weight``.
+    random_ucb_probs : array-like of float or None, default=None
+        Sampling probabilities for ``random_ucb_values``. If ``None`` with the
+        default value grid, conservative default probabilities are used. If
+        custom values are supplied without probabilities, a uniform distribution
+        over those values is used.
     constraint_damps_global_exploration : bool, default=True
         Whether to multiply the global UCB weight by
         ``1 - constraint_pressure``.
+    gate_constraint_coupling : {"none", "linear"}, default="none"
+        Whether assignment constraint pressure changes the gated local-trust
+        threshold. ``"none"`` keeps the gate epistemic and uses ``k_star`` as the
+        threshold. ``"linear"`` preserves the legacy behavior
+        ``k_star * (1 - constraint_pressure)``.
     bias_model_correction : {"none", "model_average"}, default="none"
         Optional global response-bias branch. ``"none"`` uses only the responsive
         agreement posterior. ``"model_average"`` mixes the responsive posterior
@@ -114,6 +134,15 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         Multiplier for the population-to-annotator shrinkage strength. The
         effective population prior strength is
         ``pool_prior_scale * k_star[m]``.
+    global_prior_k_multiplier : float, default=1.0
+        Multiplier applied to ``k_star`` before computing global pool-to-annotator
+        shrinkage.
+    local_bandwidth_k_multiplier : float, default=1.0
+        Multiplier applied to ``k_star`` before computing local kNN evidence or
+        kernel bandwidth ranks.
+    local_gate_k_multiplier : float, default=1.0
+        Multiplier applied to ``k_star`` before computing the gated local-trust
+        threshold and the prior-combination local prior strength.
     local_prior_scale : float, default=1.0
         Multiplier for the annotator-global-to-local prior strength in local
         mode when ``responsive_combination="prior"``. The base local strength is
@@ -153,7 +182,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         ucb_mode: str = "std",
         global_exploration_weight: float = 1.0,
         local_exploration_weight: float = 1.0,
+        random_ucb_values=None,
+        random_ucb_probs=None,
         constraint_damps_global_exploration: bool = True,
+        gate_constraint_coupling: str = "none",
         bias_model_correction: str = "none",
         locality_mode: str = "local",
         responsive_combination: str = "prior",
@@ -167,6 +199,9 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         base_prior_strength: float = 1.0,
         prior_mean_min: float = 1e-3,
         pool_prior_scale: float = 1.0,
+        global_prior_k_multiplier: float = 1.0,
+        local_bandwidth_k_multiplier: float = 1.0,
+        local_gate_k_multiplier: float = 1.0,
         local_prior_scale: float = 1.0,
         local_prior_min: float = 1.0,
         normalize_embeddings: bool = False,
@@ -177,9 +212,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         random_state=None,
         eps: float = 1e-12,
     ):
-        if score_mode not in {"mean", "thompson", "ucb"}:
+        if score_mode not in {"mean", "thompson", "ucb", "randomized_ucb"}:
             raise ValueError(
-                "score_mode must be one of {'mean', 'thompson', 'ucb'}."
+                "score_mode must be one of "
+                "{'mean', 'thompson', 'ucb', 'randomized_ucb'}."
             )
         if int(thompson_samples) <= 0:
             raise ValueError("thompson_samples must be positive.")
@@ -189,6 +225,14 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             raise ValueError("global_exploration_weight must be non-negative.")
         if float(local_exploration_weight) < 0.0:
             raise ValueError("local_exploration_weight must be non-negative.")
+        random_ucb_values, random_ucb_probs = self._validate_random_ucb_distribution(
+            values=random_ucb_values,
+            probs=random_ucb_probs,
+        )
+        if gate_constraint_coupling not in {"none", "linear"}:
+            raise ValueError(
+                "gate_constraint_coupling must be one of {'none', 'linear'}."
+            )
         if bias_model_correction not in {"none", "model_average"}:
             raise ValueError(
                 "bias_model_correction must be one of {'none', 'model_average'}."
@@ -233,6 +277,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             raise ValueError("prior_mean_min must be in the open interval (0, 0.5).")
         if pool_prior_scale < 0:
             raise ValueError("pool_prior_scale must be non-negative.")
+        if global_prior_k_multiplier <= 0:
+            raise ValueError("global_prior_k_multiplier must be positive.")
+        if local_bandwidth_k_multiplier <= 0:
+            raise ValueError("local_bandwidth_k_multiplier must be positive.")
+        if local_gate_k_multiplier <= 0:
+            raise ValueError("local_gate_k_multiplier must be positive.")
         if local_prior_scale < 0:
             raise ValueError("local_prior_scale must be non-negative.")
         if local_prior_min <= 0:
@@ -245,9 +295,12 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.ucb_mode = str(ucb_mode)
         self.global_exploration_weight = float(global_exploration_weight)
         self.local_exploration_weight = float(local_exploration_weight)
+        self.random_ucb_values = random_ucb_values
+        self.random_ucb_probs = random_ucb_probs
         self.constraint_damps_global_exploration = bool(
             constraint_damps_global_exploration
         )
+        self.gate_constraint_coupling = str(gate_constraint_coupling)
         self.bias_model_correction = str(bias_model_correction)
         self.locality_mode = str(locality_mode)
         self.responsive_combination = str(responsive_combination)
@@ -261,6 +314,9 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.base_prior_strength = float(base_prior_strength)
         self.prior_mean_min = float(prior_mean_min)
         self.pool_prior_scale = float(pool_prior_scale)
+        self.global_prior_k_multiplier = float(global_prior_k_multiplier)
+        self.local_bandwidth_k_multiplier = float(local_bandwidth_k_multiplier)
+        self.local_gate_k_multiplier = float(local_gate_k_multiplier)
         self.local_prior_scale = float(local_prior_scale)
         self.local_prior_min = float(local_prior_min)
         self.normalize_embeddings = bool(normalize_embeddings)
@@ -272,6 +328,39 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.eps = float(eps)
         self._reset_diagnostics()
 
+    @staticmethod
+    def _validate_random_ucb_distribution(*, values, probs):
+        default_values = np.asarray(_DEFAULT_RANDOM_UCB_VALUES, dtype=float)
+        values_were_defaulted = values is None
+        values = default_values if values is None else np.asarray(values, dtype=float)
+        if values.ndim != 1 or values.size == 0:
+            raise ValueError("random_ucb_values must be a non-empty 1D array.")
+        if np.any(~np.isfinite(values)) or np.any(values < 0.0):
+            raise ValueError(
+                "random_ucb_values must contain finite non-negative values."
+            )
+
+        if probs is None:
+            if values_were_defaulted:
+                probs = np.asarray(_DEFAULT_RANDOM_UCB_PROBS, dtype=float)
+            else:
+                probs = np.full(values.size, 1.0 / values.size, dtype=float)
+        else:
+            probs = np.asarray(probs, dtype=float)
+        if probs.ndim != 1 or probs.shape != values.shape:
+            raise ValueError("random_ucb_probs must match random_ucb_values shape.")
+        if np.any(~np.isfinite(probs)) or np.any(probs < 0.0):
+            raise ValueError(
+                "random_ucb_probs must contain finite non-negative values."
+            )
+        prob_sum = float(probs.sum())
+        if prob_sum <= 0.0:
+            raise ValueError("random_ucb_probs must sum to a positive value.")
+        return values.astype(float, copy=True), (probs / prob_sum).astype(
+            float,
+            copy=True,
+        )
+
     def _compute(
         self,
         X,
@@ -281,6 +370,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         available_mask,
         clf=None,
         remaining_budget=None,
+        projected_annotator_budget=None,
         constraint_pressure: float = 0.0,
         **kwargs,
     ):
@@ -336,12 +426,21 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             total_observed=int(np.count_nonzero(observed_mask)),
             n_annotators=y.shape[1],
             remaining_budget=remaining_budget,
+            projected_annotator_budget=projected_annotator_budget,
         )
+        k_star_global = self._scale_k_star(k_star, self.global_prior_k_multiplier)
+        k_star_local = self._scale_k_star(
+            k_star,
+            self.local_bandwidth_k_multiplier,
+            integer=True,
+        )
+        k_star_gate = self._scale_k_star(k_star, self.local_gate_k_multiplier)
         alpha0, beta0 = self._base_beta_prior(P)
         global_prior = self._global_priors(
             success=success,
             failure=failure,
-            k_star=k_star,
+            k_star_pool=k_star_global,
+            k_star_local_prior=k_star_gate,
             alpha0=alpha0,
             beta0=beta0,
         )
@@ -354,7 +453,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                 success=success,
                 failure=failure,
                 confidence=evidence_weight,
-                k_star=k_star,
+                k_star=k_star_local,
             )
             if self.responsive_combination == "prior":
                 rho_effective = self._effective_rho(local["rho"])
@@ -375,7 +474,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
                     local=local,
                     global_prior=global_prior,
                     annotator_indices=annotator_indices,
-                    k_star=k_star,
+                    k_star=k_star_gate,
                     alpha0=alpha0,
                     beta0=beta0,
                     constraint_pressure=constraint_pressure,
@@ -443,6 +542,11 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             bias=bias,
             evidence_weight=evidence_weight,
             constraint_pressure=constraint_pressure,
+            k_star=k_star,
+            k_star_global=k_star_global,
+            k_star_local=k_star_local,
+            k_star_gate=k_star_gate,
+            projected_annotator_budget=projected_annotator_budget,
         )
         return utilities
 
@@ -537,14 +641,27 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         total_observed: int,
         n_annotators: int,
         remaining_budget,
+        projected_annotator_budget=None,
     ) -> np.ndarray:
+        if projected_annotator_budget is not None:
+            projected = np.asarray(projected_annotator_budget, dtype=float)
+            if projected.shape != observed_counts.shape:
+                raise ValueError(
+                    "projected_annotator_budget must have one value per annotator."
+                )
+            T_m = observed_counts.astype(float) + np.maximum(projected, 0.0)
+            return np.ceil(np.sqrt(T_m)).astype(int)
+
         if remaining_budget is None:
             T = float(total_observed) / max(n_annotators, 1)
             return np.full(n_annotators, int(np.ceil(np.sqrt(T))), dtype=int)
 
         budget = np.asarray(remaining_budget, dtype=float)
         if budget.ndim == 0:
-            T = (float(total_observed) + max(float(budget), 0.0)) / max(n_annotators, 1)
+            T = (float(total_observed) + max(float(budget), 0.0)) / max(
+                n_annotators,
+                1,
+            )
             return np.full(n_annotators, int(np.ceil(np.sqrt(T))), dtype=int)
         if budget.shape != observed_counts.shape:
             raise ValueError(
@@ -552,6 +669,18 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             )
         T_m = observed_counts.astype(float) + np.maximum(budget, 0.0)
         return np.ceil(np.sqrt(T_m)).astype(int)
+
+    @staticmethod
+    def _scale_k_star(
+        k_star: np.ndarray,
+        multiplier: float,
+        *,
+        integer: bool = False,
+    ) -> np.ndarray:
+        scaled = np.asarray(k_star, dtype=float) * float(multiplier)
+        if integer:
+            return np.maximum(0, np.ceil(scaled)).astype(int)
+        return scaled
 
     def _base_beta_prior(self, P: np.ndarray) -> tuple[float, float]:
         n_classes = P.shape[1]
@@ -567,7 +696,8 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         *,
         success: np.ndarray,
         failure: np.ndarray,
-        k_star: np.ndarray,
+        k_star_pool: np.ndarray,
+        k_star_local_prior: np.ndarray,
         alpha0: float,
         beta0: float,
     ) -> dict[str, np.ndarray | float]:
@@ -578,7 +708,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         S_m = success.sum(axis=0)
         F_m = failure.sum(axis=0)
         G_m = S_m + F_m
-        tau = self.pool_prior_scale * k_star.astype(float)
+        tau = self.pool_prior_scale * np.asarray(k_star_pool, dtype=float)
         denom = tau + G_m
         mu_global = np.full(success.shape[1], mu_pool, dtype=float)
         valid = denom > self.eps
@@ -586,7 +716,10 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         nu_base = np.maximum(
             self.local_prior_min,
             self.local_prior_scale
-            * np.minimum(np.maximum(k_star.astype(float), 0.0), G_m),
+            * np.minimum(
+                np.maximum(np.asarray(k_star_local_prior, dtype=float), 0.0),
+                G_m,
+            ),
         )
         alpha_global = tau * mu_pool + S_m
         beta_global = tau * (1.0 - mu_pool) + F_m
@@ -645,9 +778,15 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             k_star[annotator_indices][None, :],
             local_mass.shape,
         ).astype(float)
+        if self.gate_constraint_coupling == "linear":
+            gate_pressure_factor = 1.0 - float(
+                np.clip(constraint_pressure, 0.0, 1.0)
+            )
+        else:
+            gate_pressure_factor = 1.0
         k_effective = np.maximum(
             self.eps,
-            k_target * (1.0 - float(np.clip(constraint_pressure, 0.0, 1.0))),
+            k_target * gate_pressure_factor,
         )
         mass_gate = np.divide(
             local_mass,
@@ -668,6 +807,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             "alpha_local": alpha_local,
             "beta_local": beta_local,
             "lambda_local": lambda_local,
+            "k_effective": k_effective,
             "mean": mean,
         }
 
@@ -949,12 +1089,13 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             p_resp = bias["p_resp"][annotator_indices][None, :]
             return p_resp * mean + (1.0 - p_resp) * bias["bias_score"]
 
-        if self.score_mode == "ucb":
+        if self.score_mode in {"ucb", "randomized_ucb"}:
             responsive_ucb = self._responsive_ucb(
                 alpha=alpha,
                 beta=beta,
                 responsive=responsive,
                 constraint_pressure=constraint_pressure,
+                randomized=self.score_mode == "randomized_ucb",
             )
             if bias is None:
                 return responsive_ucb
@@ -992,10 +1133,13 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         beta: np.ndarray,
         responsive: dict[str, np.ndarray] | None,
         constraint_pressure: float,
+        randomized: bool = False,
     ) -> np.ndarray:
         if self.ucb_mode != "std":
             raise RuntimeError(f"Unsupported ucb_mode={self.ucb_mode!r}.")
 
+        self._last_random_ucb_global_multiplier = None
+        self._last_random_ucb_local_multiplier = None
         global_weight = self.global_exploration_weight
         if self.constraint_damps_global_exploration:
             global_weight *= 1.0 - float(np.clip(constraint_pressure, 0.0, 1.0))
@@ -1004,9 +1148,21 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             mean = alpha / np.maximum(alpha + beta, self.eps)
             std = self._beta_std(alpha, beta)
             if self.locality_mode == "local":
-                weight = self.local_exploration_weight
+                if randomized:
+                    multiplier = self._draw_random_ucb_multiplier(alpha.shape)
+                    self._last_random_ucb_local_multiplier = multiplier
+                    weight = self.local_exploration_weight * multiplier
+                else:
+                    weight = self.local_exploration_weight
             else:
-                weight = global_weight
+                if randomized:
+                    multiplier = self._draw_random_ucb_multiplier(
+                        (1, alpha.shape[1])
+                    )
+                    self._last_random_ucb_global_multiplier = multiplier
+                    weight = global_weight * multiplier
+                else:
+                    weight = global_weight
             return np.clip(mean + weight * std, 0.0, 1.0)
 
         mean_global = responsive["alpha_global"] / np.maximum(
@@ -1017,20 +1173,42 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
             responsive["alpha_local"] + responsive["beta_local"],
             self.eps,
         )
-        global_ucb = mean_global + global_weight * self._beta_std(
+        std_global = self._beta_std(
             responsive["alpha_global"],
             responsive["beta_global"],
         )
-        local_ucb = mean_local + self.local_exploration_weight * self._beta_std(
+        std_local = self._beta_std(
             responsive["alpha_local"],
             responsive["beta_local"],
         )
+        if randomized:
+            global_multiplier = self._draw_random_ucb_multiplier(
+                (1, responsive["alpha_global"].shape[1])
+            )
+            local_multiplier = self._draw_random_ucb_multiplier(
+                responsive["alpha_local"].shape
+            )
+            self._last_random_ucb_global_multiplier = global_multiplier
+            self._last_random_ucb_local_multiplier = local_multiplier
+            global_weight = global_weight * global_multiplier
+            local_weight = self.local_exploration_weight * local_multiplier
+        else:
+            local_weight = self.local_exploration_weight
+        global_ucb = mean_global + global_weight * std_global
+        local_ucb = mean_local + local_weight * std_local
         lambda_local = responsive["lambda_local"]
         return np.clip(
             (1.0 - lambda_local) * global_ucb + lambda_local * local_ucb,
             0.0,
             1.0,
         )
+
+    def _draw_random_ucb_multiplier(self, shape) -> np.ndarray:
+        return self.random_state.choice(
+            self.random_ucb_values,
+            size=shape,
+            p=self.random_ucb_probs,
+        ).astype(float, copy=False)
 
     def _beta_std(self, alpha: np.ndarray, beta: np.ndarray) -> np.ndarray:
         total = np.maximum(alpha + beta, self.eps)
@@ -1118,6 +1296,11 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         bias,
         evidence_weight,
         constraint_pressure,
+        k_star,
+        k_star_global,
+        k_star_local,
+        k_star_gate,
+        projected_annotator_budget,
     ) -> None:
         self.last_alpha_ = alpha
         self.last_beta_ = beta
@@ -1137,14 +1320,30 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_alpha_global_ = global_prior["alpha_global"]
         self.last_beta_global_ = global_prior["beta_global"]
         self.last_tau_pool_ = global_prior["tau_pool"]
+        self.last_k_star_ = k_star
+        self.last_k_star_global_ = k_star_global
+        self.last_k_star_local_ = k_star_local
+        self.last_k_star_gate_ = k_star_gate
+        self.last_projected_annotator_budget_ = (
+            None
+            if projected_annotator_budget is None
+            else np.asarray(projected_annotator_budget, dtype=float)
+        )
         self.last_responsive_combination_ = self.responsive_combination
         self.last_gated_thompson_mode_ = self.gated_thompson_mode
         self.last_ucb_mode_ = self.ucb_mode
         self.last_global_exploration_weight_ = self.global_exploration_weight
         self.last_local_exploration_weight_ = self.local_exploration_weight
+        self.last_random_ucb_values_ = self.random_ucb_values
+        self.last_random_ucb_probs_ = self.random_ucb_probs
+        self.last_random_ucb_global_multiplier_ = (
+            self._last_random_ucb_global_multiplier
+        )
+        self.last_random_ucb_local_multiplier_ = self._last_random_ucb_local_multiplier
         self.last_constraint_damps_global_exploration_ = (
             self.constraint_damps_global_exploration
         )
+        self.last_gate_constraint_coupling_ = self.gate_constraint_coupling
         self.last_evidence_weighting_ = self.evidence_weighting
         self.last_agreement_mode_ = self.agreement_mode
         self.last_bias_response_weighting_ = self.bias_response_weighting
@@ -1155,6 +1354,9 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_local_kernel_weight_sum_ = local.get("kernel_weight_sum")
         self.last_lambda_local_ = (
             None if responsive is None else responsive["lambda_local"]
+        )
+        self.last_gate_k_effective_ = (
+            None if responsive is None else responsive["k_effective"]
         )
         self.last_alpha_local_ = (
             None if responsive is None else responsive["alpha_local"]
@@ -1195,12 +1397,24 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_alpha_global_ = None
         self.last_beta_global_ = None
         self.last_tau_pool_ = None
+        self.last_k_star_ = None
+        self.last_k_star_global_ = None
+        self.last_k_star_local_ = None
+        self.last_k_star_gate_ = None
+        self.last_projected_annotator_budget_ = None
         self.last_responsive_combination_ = None
         self.last_gated_thompson_mode_ = None
         self.last_ucb_mode_ = None
         self.last_global_exploration_weight_ = None
         self.last_local_exploration_weight_ = None
+        self.last_random_ucb_values_ = None
+        self.last_random_ucb_probs_ = None
+        self.last_random_ucb_global_multiplier_ = None
+        self.last_random_ucb_local_multiplier_ = None
+        self._last_random_ucb_global_multiplier = None
+        self._last_random_ucb_local_multiplier = None
         self.last_constraint_damps_global_exploration_ = None
+        self.last_gate_constraint_coupling_ = None
         self.last_evidence_weighting_ = None
         self.last_agreement_mode_ = None
         self.last_bias_response_weighting_ = None
@@ -1210,6 +1424,7 @@ class BudgetAwareLocalAgreementScorer(PairScorer):
         self.last_local_kernel_bandwidth_ = None
         self.last_local_kernel_weight_sum_ = None
         self.last_lambda_local_ = None
+        self.last_gate_k_effective_ = None
         self.last_alpha_local_ = None
         self.last_beta_local_ = None
         self.last_p_responsive_ = None

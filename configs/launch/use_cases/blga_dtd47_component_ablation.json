@@ -1,0 +1,149 @@
+{
+  "name": "blga_dtd47_component_ablation",
+  "description": "Study 1 DTD47 BLGA component and hyperparameter grid with random sample selection, two crowd classifiers, and quota-like/moderate/loose annotator caps",
+  "common_overrides": [
+    "paths=default",
+    "pipeline=default",
+    "dataset=dtd47",
+    "al=dtd47",
+    "embedder@classification_embedder=clip",
+    "embedder@simulation_embedder=dinov2",
+    "module=mlp",
+    "scheduler=step_ratio_1",
+    "sample@sample.init=random",
+    "sample@sample.actual=random",
+    "scorer@scorer.init=random",
+    "assigner@assigner.init=quota_sample",
+    "assigner@assigner.actual=optimal_sample_loose_cap",
+    "hydra/hydra_logging=disabled",
+    "hydra/job_logging=disabled",
+    "mlflow_write_jitter_max_seconds=60.0",
+    "device=cpu",
+    "missing_label=-1",
+    "exit_after_simulation=false",
+    "experiment_name=blga_dtd47_component_ablation",
+    "training=default",
+    "al.annotator_capacity.mode=none",
+    "al.annotator_capacity.multiplier=1.0"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "scenario",
+      "type": "choices",
+      "values": {
+        "balanced_medium": {
+          "overrides": ["simulation=dtd47_balanced_medium"],
+          "tags": {"annotator_scenario": "balanced_medium"}
+        },
+        "novice_heavy": {
+          "overrides": ["simulation=dtd47_novice_heavy"],
+          "tags": {"annotator_scenario": "novice_heavy"}
+        },
+        "spammer_contaminated": {
+          "overrides": ["simulation=dtd47_spammer_contaminated"],
+          "tags": {"annotator_scenario": "spammer_contaminated"}
+        },
+        "equal_global_feature_specialists": {
+          "overrides": ["simulation=dtd47_equal_global_feature_specialists"],
+          "tags": {"annotator_scenario": "equal_global_feature_specialists"}
+        }
+      }
+    },
+    {
+      "name": "classifier",
+      "type": "choices",
+      "values": {
+        "annot_mix_gating": {
+          "overrides": ["classifier=annot_mix_gating"],
+          "tags": {"crowd_classifier": "annot_mix_gating"}
+        },
+        "geo_reg_f": {
+          "overrides": ["classifier=geo_reg_f"],
+          "tags": {"crowd_classifier": "geo_reg_f"}
+        }
+      }
+    },
+    {
+      "name": "constraint",
+      "type": "choices",
+      "values": {
+        "quota_cap_1x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=1.0"],
+          "tags": {"cap_multiplier": "1.0", "constraint_pressure": "quota_like"}
+        },
+        "moderate_cap_2x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=2.0"],
+          "tags": {"cap_multiplier": "2.0", "constraint_pressure": "moderate"}
+        },
+        "loose_cap_4x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=4.0"],
+          "tags": {"cap_multiplier": "4.0", "constraint_pressure": "loose"}
+        }
+      }
+    },
+    {
+      "name": "variant",
+      "type": "choices",
+      "values": {
+        "random": {
+          "overrides": ["scorer@scorer.actual=random"],
+          "tags": {"method_family": "random", "ablation": "baseline"}
+        },
+        "global_randomized_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_global"],
+          "tags": {"method_family": "blga", "ablation": "global_only"}
+        },
+        "local_mean": {
+          "overrides": ["scorer@scorer.actual=blga_gated_mean"],
+          "tags": {"method_family": "blga", "ablation": "policy_mean"}
+        },
+        "local_thompson_5": {
+          "overrides": ["scorer@scorer.actual=blga_gated_ts5"],
+          "tags": {"method_family": "blga", "ablation": "policy_thompson"}
+        },
+        "local_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_gated_ucb"],
+          "tags": {"method_family": "blga", "ablation": "policy_ucb"}
+        },
+        "local_randomized_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_gated_randomized_ucb"],
+          "tags": {"method_family": "blga", "selected_variant": "main"}
+        },
+        "no_bias_model": {
+          "overrides": ["scorer@scorer.actual=blga_gated_no_bias"],
+          "tags": {"method_family": "blga", "ablation": "no_bias_model"}
+        },
+        "gate_constraint_none": {
+          "overrides": ["scorer@scorer.actual=blga_gated_gate_none"],
+          "tags": {"method_family": "blga", "ablation": "gate_constraint_none"}
+        },
+        "argmax_agreement": {
+          "overrides": ["scorer@scorer.actual=blga_gated_argmax_agreement"],
+          "tags": {"method_family": "blga", "ablation": "agreement_argmax"}
+        },
+        "raw_probability_agreement": {
+          "overrides": ["scorer@scorer.actual=blga_gated_soft_raw_probability"],
+          "tags": {"method_family": "blga", "ablation": "agreement_raw_probability"}
+        },
+        "uniform_evidence": {
+          "overrides": ["scorer@scorer.actual=blga_gated_uniform_evidence"],
+          "tags": {"method_family": "blga", "ablation": "evidence_uniform"}
+        },
+        "entropy_evidence": {
+          "overrides": ["scorer@scorer.actual=blga_gated_entropy_evidence"],
+          "tags": {"method_family": "blga", "ablation": "evidence_entropy"}
+        },
+        "margin_evidence": {
+          "overrides": ["scorer@scorer.actual=blga_gated_margin_evidence"],
+          "tags": {"method_family": "blga", "ablation": "evidence_margin"}
+        }
+      }
+    }
+  ]
+}

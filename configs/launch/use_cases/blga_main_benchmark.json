@@ -1,0 +1,231 @@
+{
+  "name": "blga_main_benchmark",
+  "description": "Main non-DTD47 annotator-scorer benchmark under random sample selection, two crowd classifiers, and quota-like/moderate/loose annotator caps",
+  "common_overrides": [
+    "paths=default",
+    "pipeline=default",
+    "module=mlp",
+    "scheduler=step_ratio_1",
+    "sample@sample.init=random",
+    "sample@sample.actual=random",
+    "scorer@scorer.init=random",
+    "assigner@assigner.init=quota_sample",
+    "assigner@assigner.actual=optimal_sample_loose_cap",
+    "hydra/hydra_logging=disabled",
+    "hydra/job_logging=disabled",
+    "mlflow_write_jitter_max_seconds=60.0",
+    "device=cpu",
+    "missing_label=-1",
+    "exit_after_simulation=false",
+    "experiment_name=blga_main_benchmark",
+    "training=default",
+    "al.annotator_capacity.mode=none",
+    "al.annotator_capacity.multiplier=1.0"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "dataset",
+      "type": "choices",
+      "values": {
+        "al_rcta_agnews": {
+          "overrides": [
+            "dataset=al_rcta_agnews",
+            "al=al_rcta_agnews",
+            "~simulation",
+            "embedder@classification_embedder=mpnetv2",
+            "~embedder@simulation_embedder"
+          ],
+          "tags": {"annotator_source": "real"}
+        },
+        "al_rcta_consumer_complaints": {
+          "overrides": [
+            "dataset=al_rcta_consumer_complaints",
+            "al=al_rcta_consumer_complaints",
+            "~simulation",
+            "embedder@classification_embedder=mpnetv2",
+            "~embedder@simulation_embedder"
+          ],
+          "tags": {"annotator_source": "real"}
+        },
+        "al_rcta_wiki_movie_plots": {
+          "overrides": [
+            "dataset=al_rcta_wiki_movie_plots",
+            "al=al_rcta_wiki_movie_plots",
+            "~simulation",
+            "embedder@classification_embedder=mpnetv2",
+            "~embedder@simulation_embedder"
+          ],
+          "tags": {"annotator_source": "real"}
+        },
+        "audiomnist10": {
+          "overrides": [
+            "dataset=audiomnist10",
+            "al=audiomnist10",
+            "simulation=audiomnist10",
+            "embedder@classification_embedder=wav2vec",
+            "embedder@simulation_embedder=wavlm"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        },
+        "banking77": {
+          "overrides": [
+            "dataset=banking77",
+            "al=banking77",
+            "simulation=banking77",
+            "embedder@classification_embedder=mpnetv2",
+            "embedder@simulation_embedder=minilmv2"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        },
+        "dermamnist7": {
+          "overrides": [
+            "dataset=dermamnist7",
+            "al=dermamnist7",
+            "simulation=dermamnist7",
+            "embedder@classification_embedder=dinov2",
+            "embedder@simulation_embedder=clip"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        },
+        "dopanim": {
+          "overrides": [
+            "dataset=dopanim",
+            "al=dopanim",
+            "~simulation",
+            "embedder@classification_embedder=dinov2",
+            "~embedder@simulation_embedder"
+          ],
+          "tags": {"annotator_source": "real"}
+        },
+        "food101": {
+          "overrides": [
+            "dataset=food101",
+            "al=food101",
+            "simulation=food101",
+            "embedder@classification_embedder=dinov2",
+            "embedder@simulation_embedder=clip"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        },
+        "letter26": {
+          "overrides": [
+            "dataset=letter26",
+            "al=letter26",
+            "simulation=letter26",
+            "embedder@classification_embedder=identity_tabular",
+            "embedder@simulation_embedder=identity_tabular"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        },
+        "skits2i14": {
+          "overrides": [
+            "dataset=skits2i14",
+            "al=skits2i14",
+            "simulation=skits2i14",
+            "embedder@classification_embedder=wav2vec",
+            "embedder@simulation_embedder=wavlm"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        },
+        "trec6": {
+          "overrides": [
+            "dataset=trec6",
+            "al=trec6",
+            "simulation=trec6",
+            "embedder@classification_embedder=mpnetv2",
+            "embedder@simulation_embedder=minilmv2"
+          ],
+          "tags": {"annotator_source": "simulated"}
+        }
+      }
+    },
+    {
+      "name": "classifier",
+      "type": "choices",
+      "values": {
+        "annot_mix_gating": {
+          "overrides": ["classifier=annot_mix_gating"],
+          "tags": {"crowd_classifier": "annot_mix_gating"}
+        },
+        "geo_reg_f": {
+          "overrides": ["classifier=geo_reg_f"],
+          "tags": {"crowd_classifier": "geo_reg_f"}
+        }
+      }
+    },
+    {
+      "name": "constraint",
+      "type": "choices",
+      "values": {
+        "quota_cap_1x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=1.0"],
+          "tags": {"cap_multiplier": "1.0", "constraint_pressure": "quota_like"}
+        },
+        "moderate_cap_2x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=2.0"],
+          "tags": {"cap_multiplier": "2.0", "constraint_pressure": "moderate"}
+        },
+        "loose_cap_4x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=4.0"],
+          "tags": {"cap_multiplier": "4.0", "constraint_pressure": "loose"}
+        }
+      }
+    },
+    {
+      "name": "method",
+      "type": "choices",
+      "values": {
+        "random": {
+          "overrides": ["scorer@scorer.actual=random"],
+          "tags": {"method_family": "random"}
+        },
+        "performance": {
+          "overrides": ["scorer@scorer.actual=performance"],
+          "tags": {"method_family": "classifier_reliability"}
+        },
+        "beta": {
+          "overrides": ["scorer@scorer.actual=beta"],
+          "tags": {"method_family": "local_reliability"}
+        },
+        "label_minority": {
+          "overrides": ["scorer@scorer.actual=label_minority"],
+          "tags": {"method_family": "subjective_al"}
+        },
+        "representation_diversity": {
+          "overrides": ["scorer@scorer.actual=representation_diversity"],
+          "tags": {"method_family": "subjective_al"}
+        },
+        "semantic_diversity": {
+          "overrides": ["scorer@scorer.actual=semantic_diversity"],
+          "tags": {"method_family": "subjective_al"}
+        },
+        "agreement_global": {
+          "overrides": ["scorer@scorer.actual=agreement_global"],
+          "tags": {"method_family": "global_quality"}
+        },
+        "label_quality_global": {
+          "overrides": ["scorer@scorer.actual=label_quality_global"],
+          "tags": {"method_family": "global_quality"}
+        },
+        "crowdlab_global": {
+          "overrides": ["scorer@scorer.actual=crowdlab_global"],
+          "tags": {"method_family": "global_quality"}
+        },
+        "ig": {
+          "overrides": ["scorer@scorer.actual=ig"],
+          "tags": {"method_family": "information_gain"}
+        },
+        "blga_gated_randomized_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_gated_randomized_ucb"],
+          "tags": {"method_family": "blga", "selected_variant": "main"}
+        }
+      }
+    }
+  ]
+}

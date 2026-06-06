@@ -2,5 +2,5 @@ defaults:
   - blga_gated_randomized_ucb
   - _self_
 
-agreement_mode: soft_chance_corrected
+agreement_mode: argmax
 bias_response_weighting: uniform

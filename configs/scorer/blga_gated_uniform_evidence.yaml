@@ -1,5 +1,5 @@
 defaults:
-  - blga_gated
+  - blga_gated_randomized_ucb
   - _self_
 
 evidence_weighting: uniform

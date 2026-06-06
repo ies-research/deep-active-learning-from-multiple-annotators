@@ -48,6 +48,64 @@ def _resolve_annotator_total_capacities(al_cfg, n_annotators):
     return np.full(n_annotators, cap, dtype=np.int64)
 
 
+def _waterfill_budget_projection(*, budget, capacities):
+    capacities = np.maximum(np.asarray(capacities, dtype=float), 0.0)
+    future = np.zeros_like(capacities, dtype=float)
+    remaining = min(float(max(int(budget), 0)), float(capacities.sum()))
+    while remaining > 1e-12:
+        active = np.flatnonzero((capacities - future) > 1e-12)
+        if active.size == 0:
+            break
+        share = remaining / float(active.size)
+        add = np.minimum(share, capacities[active] - future[active])
+        mass = float(add.sum())
+        if mass <= 1e-12:
+            break
+        future[active] += add
+        remaining -= mass
+    return future
+
+
+def _project_annotator_future_budget(
+    *,
+    assigner,
+    budget,
+    annotator_indices,
+    annotator_remaining_counts,
+    n_annotators,
+    remaining_cycles,
+):
+    projected = np.zeros(int(n_annotators), dtype=float)
+    annotator_indices = np.asarray(annotator_indices, dtype=int)
+    if int(budget) <= 0 or annotator_indices.size == 0:
+        return projected
+
+    remaining_counts = np.asarray(annotator_remaining_counts, dtype=float)
+    capacities = np.maximum(remaining_counts[annotator_indices], 0.0)
+
+    max_mode = str(getattr(assigner, "max_per_annotator_mode", "fixed"))
+    if max_mode == "fixed":
+        max_per_annotator = getattr(assigner, "max_per_annotator", None)
+        if max_per_annotator is not None:
+            horizon_cap = float(max_per_annotator) * float(
+                max(int(remaining_cycles), 1)
+            )
+            capacities = np.minimum(capacities, horizon_cap)
+    elif max_mode == "relative_batch_share":
+        multiplier = float(getattr(assigner, "max_per_annotator_multiplier", 1.0))
+        if multiplier < 1.0:
+            fair_cap = multiplier * float(max(int(budget), 0)) / float(
+                annotator_indices.size
+            )
+            capacities = np.minimum(capacities, fair_cap)
+
+    projected[annotator_indices] = _waterfill_budget_projection(
+        budget=budget,
+        capacities=capacities,
+    )
+    return projected
+
+
 def _utility_tsne_notice(message):
     warnings.warn(message)
     print(f"[utility_tsne] {message}")
@@ -131,6 +189,7 @@ def _maybe_print_budget_aware_local_agreement_diagnostics(scorer, cycle_idx):
         f"evidence={getattr(scorer, 'last_evidence_weighting_', getattr(scorer, 'evidence_weighting', 'unknown'))}",
         f"agreement={getattr(scorer, 'last_agreement_mode_', getattr(scorer, 'agreement_mode', 'unknown'))}",
         f"constraint_pressure={getattr(scorer, 'last_constraint_pressure_', 'unknown')}",
+        f"gate_pressure={getattr(scorer, 'last_gate_constraint_coupling_', getattr(scorer, 'gate_constraint_coupling', 'unknown'))}",
         f"rho_correction={getattr(scorer, 'last_use_rho_correction_', getattr(scorer, 'use_rho_correction', 'unknown'))}",
         f"score_mode={getattr(scorer, 'score_mode', 'unknown')}",
         f"ucb={getattr(scorer, 'last_ucb_mode_', getattr(scorer, 'ucb_mode', 'unknown'))}",
@@ -146,6 +205,12 @@ def _maybe_print_budget_aware_local_agreement_diagnostics(scorer, cycle_idx):
     )
     _append_diagnostic_stat(
         parts, "tau_pool_mean", getattr(scorer, "last_tau_pool_", None)
+    )
+    _append_diagnostic_stat(parts, "k_star_mean", getattr(scorer, "last_k_star_", None))
+    _append_diagnostic_stat(
+        parts,
+        "proj_budget_mean",
+        getattr(scorer, "last_projected_annotator_budget_", None),
     )
     _append_diagnostic_stat(
         parts, "alpha_G_mean", getattr(scorer, "last_alpha_global_", None)
@@ -179,6 +244,16 @@ def _maybe_print_budget_aware_local_agreement_diagnostics(scorer, cycle_idx):
     _append_diagnostic_stat(parts, "raw_mean", getattr(scorer, "last_raw_score_", None))
     _append_diagnostic_stat(
         parts, "final_mean", getattr(scorer, "last_final_score_", None)
+    )
+    _append_diagnostic_stat(
+        parts,
+        "zG_mean",
+        getattr(scorer, "last_random_ucb_global_multiplier_", None),
+    )
+    _append_diagnostic_stat(
+        parts,
+        "zL_mean",
+        getattr(scorer, "last_random_ucb_local_multiplier_", None),
     )
 
     lambda_local = getattr(scorer, "last_lambda_local_", None)
@@ -1050,6 +1125,14 @@ def experiment(cfg):
             annotator_indices=annotator_indices,
             annotator_remaining_counts=annotator_remaining_counts,
         )
+        projected_annotator_budget = _project_annotator_future_budget(
+            assigner=current_assigner,
+            budget=remaining_pair_budget,
+            annotator_indices=annotator_indices,
+            annotator_remaining_counts=annotator_remaining_counts,
+            n_annotators=y_pool.shape[1],
+            remaining_cycles=max(int(cfg.al.n_cycles) - cycle_idx, 1),
+        )
 
         # Select candidate samples.
         is_cand = is_unlabeled(y_pool, missing_label=cfg.missing_label)
@@ -1098,6 +1181,7 @@ def experiment(cfg):
                 ],
                 budget_total=total_pair_budget,
                 remaining_budget=remaining_pair_budget,
+                projected_annotator_budget=projected_annotator_budget,
                 constraint_pressure=constraint_pressure,
             )
             budget_locality = getattr(

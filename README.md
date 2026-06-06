@@ -69,6 +69,127 @@ Helper scripts and SLURM wrappers also respect:
 - `CONDA_ENV_NAME`: optional environment name for SLURM wrappers, defaults to
   `dalc`
 
+## SLURM Quick Start For BLGA Studies
+
+Set these paths once in the shell where you submit jobs. Adjust the example
+values if the cluster uses different mount points:
+
+```bash
+export DALC_REPO_ROOT=/home/mherde/PycharmProjects/deep-active-learning-from-multiple-annotators
+export DALC_DATA_ROOT=/home/datasets
+export DALC_RESULTS_ROOT=/home/results
+export CONDA_BASE=/home/mherde/miniconda3
+export CONDA_ENV_NAME=dalc
+
+cd "${DALC_REPO_ROOT}"
+mkdir -p "${DALC_REPO_ROOT}/slurm/logs" "${DALC_REPO_ROOT}/manifests"
+```
+
+Path meanings:
+
+- `DALC_REPO_ROOT`: checkout containing `scripts/`, `configs/`, and `slurm/`.
+- `DALC_DATA_ROOT`: dataset root. This overrides `paths.master_dir` and is
+  where local datasets such as `dopanim_full` and the AL-RCTA datasets are
+  expected.
+- `DALC_RESULTS_ROOT`: experiment output root. MLflow is written under
+  `${DALC_RESULTS_ROOT}/mlflow`.
+- `CONDA_BASE`: Conda installation root. The Slurm wrappers source
+  `${CONDA_BASE}/etc/profile.d/conda.sh` when Conda is not already available.
+- `CONDA_ENV_NAME`: Conda environment activated by the Slurm wrappers when an
+  explicit Python executable is not passed.
+
+The main BLGA use-case names are:
+
+- `blga_dtd47_component_ablation`: Study 1 full BLGA component/hyperparameter
+  grid on DTD47.
+- `blga_dtd47_scenario_ablation`: compact Study 1 DTD47 scenario grid.
+- `blga_main_benchmark`: Study 2 annotator-selection benchmark.
+- `blga_active_learning_interaction`: Study 3 active-learning interaction grid.
+
+Generate manifests locally before submitting arrays:
+
+```bash
+conda activate "${CONDA_ENV_NAME}"
+
+for USE_CASE in \
+  blga_dtd47_component_ablation \
+  blga_dtd47_scenario_ablation \
+  blga_main_benchmark \
+  blga_active_learning_interaction
+do
+  python scripts/generate_manifest.py "${USE_CASE}"
+  wc -l "manifests/${USE_CASE}.jsonl"
+done
+```
+
+Submit one use case as a Slurm array:
+
+```bash
+USE_CASE=blga_main_benchmark
+MANIFEST="manifests/${USE_CASE}.jsonl"
+ROWS=$(wc -l < "${MANIFEST}")
+
+SETUP_JOB_ID=$(sbatch --parsable \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
+  slurm/setup_mlflow.sbatch \
+  "${USE_CASE}")
+
+sbatch --dependency=afterok:${SETUP_JOB_ID} \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-$((ROWS-1)) \
+  slurm/run_manifest_array.sbatch \
+  "${MANIFEST}"
+```
+
+Submit all current BLGA study manifests with the same pattern:
+
+```bash
+for USE_CASE in \
+  blga_dtd47_component_ablation \
+  blga_dtd47_scenario_ablation \
+  blga_main_benchmark \
+  blga_active_learning_interaction
+do
+  MANIFEST="manifests/${USE_CASE}.jsonl"
+  ROWS=$(wc -l < "${MANIFEST}")
+
+  SETUP_JOB_ID=$(sbatch --parsable \
+    --chdir="${DALC_REPO_ROOT}" \
+    --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
+    --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
+    slurm/setup_mlflow.sbatch \
+    "${USE_CASE}")
+
+  sbatch --dependency=afterok:${SETUP_JOB_ID} \
+    --chdir="${DALC_REPO_ROOT}" \
+    --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+    --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+    --array=0-$((ROWS-1)) \
+    slurm/run_manifest_array.sbatch \
+    "${MANIFEST}"
+done
+```
+
+Optional cache preparation for the non-DTD47 simulated/real benchmark datasets:
+
+```bash
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-7 \
+  slurm/prepare_datasets.sbatch
+```
+
+This preparation wrapper currently covers `audiomnist10`, `banking77`,
+`dermamnist7`, `dopanim`, `food101`, `letter26`, `skits2i14`, and `trec6`.
+DTD47 and AL-RCTA are not part of that wrapper; their features/caches are
+created by the experiment jobs unless you add dedicated preparation tasks.
+
 ## Git-Tracked Directory Overview
 
 The following directories are currently represented in `git ls-files`. This
@@ -193,10 +314,21 @@ The batch entry point for preparing cached artifacts is
 [slurm/prepare_datasets.sbatch](slurm/prepare_datasets.sbatch). The current
 array definition prepares exactly these datasets:
 
-- `0`: `trec6` with classification embedder `bert` and simulation `trec6`
-- `1`: `letter26` with classification embedder `identity_tabular` and
-  simulation `letter26`
-- `2`: `dopanim` with classification embedder `dinov2` and no simulation step
+- `0`: `audiomnist10` with classification embedder `wav2vec` and simulation
+  embedder `wavlm`
+- `1`: `banking77` with classification embedder `mpnetv2` and simulation
+  embedder `minilmv2`
+- `2`: `dermamnist7` with classification embedder `dinov2` and simulation
+  embedder `clip`
+- `3`: `dopanim` with classification embedder `dinov2` and no simulation step
+- `4`: `food101` with classification embedder `dinov2` and simulation embedder
+  `clip`
+- `5`: `letter26` with classification embedder `identity_tabular` and
+  simulation embedder `identity_tabular`
+- `6`: `skits2i14` with classification embedder `wav2vec` and simulation
+  embedder `wavlm`
+- `7`: `trec6` with classification embedder `mpnetv2` and simulation embedder
+  `minilmv2`
 
 For `dopanim`, the script runs `scripts/prepare_dopanim.py --variant full`
 before preparing cached embeddings. For `letter26`, the helper uses the
@@ -212,7 +344,7 @@ sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-2 \
+  --array=0-7 \
   slurm/prepare_datasets.sbatch
 ```
 
@@ -223,7 +355,7 @@ sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-2 \
+  --array=0-7 \
   slurm/prepare_datasets.sbatch \
   /path/to/python
 ```
@@ -238,7 +370,7 @@ SLURM_ARRAY_TASK_ID=2 bash slurm/prepare_datasets.sbatch
 Run all currently configured preparation tasks locally:
 
 ```bash
-for i in {0..2}; do
+for i in {0..7}; do
   SLURM_ARRAY_TASK_ID=$i bash slurm/prepare_datasets.sbatch
 done
 ```

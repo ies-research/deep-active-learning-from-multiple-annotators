@@ -1,0 +1,146 @@
+{
+  "name": "blga_active_learning_interaction",
+  "description": "Study 3 active-learning interaction grid crossing sample selection with random, performance, and frozen BLGA annotator selection",
+  "common_overrides": [
+    "paths=default",
+    "pipeline=default",
+    "module=mlp",
+    "scheduler=step_ratio_1",
+    "sample@sample.init=random",
+    "scorer@scorer.init=random",
+    "assigner@assigner.init=quota_sample",
+    "assigner@assigner.actual=optimal_sample_loose_cap",
+    "hydra/hydra_logging=disabled",
+    "hydra/job_logging=disabled",
+    "mlflow_write_jitter_max_seconds=60.0",
+    "device=cpu",
+    "missing_label=-1",
+    "exit_after_simulation=false",
+    "experiment_name=blga_active_learning_interaction",
+    "training=default",
+    "al.annotator_capacity.mode=none",
+    "al.annotator_capacity.multiplier=1.0"
+  ],
+  "axes": [
+    {
+      "name": "seed",
+      "type": "template",
+      "values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "overrides": ["seed={value}"]
+    },
+    {
+      "name": "dataset",
+      "type": "choices",
+      "values": {
+        "banking77": {
+          "overrides": [
+            "dataset=banking77",
+            "al=banking77",
+            "simulation=banking77",
+            "embedder@classification_embedder=mpnetv2",
+            "embedder@simulation_embedder=minilmv2"
+          ],
+          "tags": {"annotator_source": "simulated", "modality": "text"}
+        },
+        "dermamnist7": {
+          "overrides": [
+            "dataset=dermamnist7",
+            "al=dermamnist7",
+            "simulation=dermamnist7",
+            "embedder@classification_embedder=dinov2",
+            "embedder@simulation_embedder=clip"
+          ],
+          "tags": {"annotator_source": "simulated", "modality": "image"}
+        },
+        "skits2i14": {
+          "overrides": [
+            "dataset=skits2i14",
+            "al=skits2i14",
+            "simulation=skits2i14",
+            "embedder@classification_embedder=wav2vec",
+            "embedder@simulation_embedder=wavlm"
+          ],
+          "tags": {"annotator_source": "simulated", "modality": "audio"}
+        },
+        "al_rcta_wiki_movie_plots": {
+          "overrides": [
+            "dataset=al_rcta_wiki_movie_plots",
+            "al=al_rcta_wiki_movie_plots",
+            "~simulation",
+            "embedder@classification_embedder=mpnetv2",
+            "~embedder@simulation_embedder"
+          ],
+          "tags": {"annotator_source": "real", "modality": "text"}
+        }
+      }
+    },
+    {
+      "name": "sampler",
+      "type": "choices",
+      "values": {
+        "random": {
+          "overrides": ["sample@sample.actual=random"],
+          "tags": {"sample_strategy": "random"}
+        },
+        "margin": {
+          "overrides": ["sample@sample.actual=margin"],
+          "tags": {"sample_strategy": "uncertainty_margin"}
+        },
+        "badge": {
+          "overrides": ["sample@sample.actual=badge"],
+          "tags": {"sample_strategy": "badge"}
+        }
+      }
+    },
+    {
+      "name": "classifier",
+      "type": "choices",
+      "values": {
+        "annot_mix_gating": {
+          "overrides": ["classifier=annot_mix_gating"],
+          "tags": {"crowd_classifier": "annot_mix_gating"}
+        },
+        "geo_reg_f": {
+          "overrides": ["classifier=geo_reg_f"],
+          "tags": {"crowd_classifier": "geo_reg_f"}
+        }
+      }
+    },
+    {
+      "name": "constraint",
+      "type": "choices",
+      "values": {
+        "quota_cap_1x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=1.0"],
+          "tags": {"cap_multiplier": "1.0", "constraint_pressure": "quota_like"}
+        },
+        "moderate_cap_2x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=2.0"],
+          "tags": {"cap_multiplier": "2.0", "constraint_pressure": "moderate"}
+        },
+        "loose_cap_4x": {
+          "overrides": ["assigner.actual.max_per_annotator_multiplier=4.0"],
+          "tags": {"cap_multiplier": "4.0", "constraint_pressure": "loose"}
+        }
+      }
+    },
+    {
+      "name": "annotator_scorer",
+      "type": "choices",
+      "values": {
+        "random": {
+          "overrides": ["scorer@scorer.actual=random"],
+          "tags": {"method_family": "random"}
+        },
+        "performance": {
+          "overrides": ["scorer@scorer.actual=performance"],
+          "tags": {"method_family": "classifier_reliability"}
+        },
+        "blga_gated_randomized_ucb": {
+          "overrides": ["scorer@scorer.actual=blga_gated_randomized_ucb"],
+          "tags": {"method_family": "blga", "selected_variant": "main"}
+        }
+      }
+    }
+  ]
+}
