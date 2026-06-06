@@ -5,4 +5,4 @@ annotator_capacity:
   mode: none
   multiplier: 1.0
 max_candidate_samples: 5000
-fully_unlabeled_cand: False
+fully_unlabeled_cand: True

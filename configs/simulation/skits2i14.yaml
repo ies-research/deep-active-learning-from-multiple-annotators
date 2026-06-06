@@ -11,7 +11,7 @@ allocation: deterministic
 missing_rate: 0.0
 missing_value: -1
 
-feature_preprocess: l2_normalize
+feature_preprocess: none
 
 use_difficulty: true
 difficulty_k: 15
