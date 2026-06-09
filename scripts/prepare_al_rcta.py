@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,7 +157,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Destination of the saved DatasetDict. Use a distinct directory "
-            "for each test cap, e.g. al_rcta_agnews_test3000."
+            "for each test cap. Defaults to <data-root>/<dataset>_testN when "
+            "--max-test-size N is set, otherwise <data-root>/<dataset>."
         ),
     )
     parser.add_argument(
@@ -175,6 +177,14 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for deterministic stratified test sampling.",
     )
     parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help=(
+            "Delete and re-clone the managed raw al_rcta repository before "
+            "building the processed DatasetDict."
+        ),
+    )
+    parser.add_argument(
         "--force-rebuild",
         action="store_true",
         help="Overwrite an existing processed DatasetDict.",
@@ -186,8 +196,97 @@ def default_raw_dir(data_root: Path) -> Path:
     return data_root / "raw" / "al_rcta"
 
 
-def default_output_dir(data_root: Path, spec: ALRCTADatasetSpec) -> Path:
-    return data_root / spec.output_name
+def default_output_dir(
+    data_root: Path, spec: ALRCTADatasetSpec, max_test_size: int | None
+) -> Path:
+    if max_test_size is None:
+        return data_root / spec.output_name
+    return data_root / f"{spec.output_name}_test{max_test_size}"
+
+
+def run_git(args: list[str], *, cwd: Path | None = None) -> None:
+    cmd = ["git", *args]
+    try:
+        print(f"Running: {' '.join(cmd)}")
+        subprocess.run(cmd, cwd=cwd, check=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "git is required to download AL-RCTA raw data automatically. "
+            f"Install git or manually clone {UPSTREAM_REPO_URL} into the raw "
+            "directory and pass --raw-dir if needed."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Git command failed with exit code {exc.returncode}: {' '.join(cmd)}"
+        ) from exc
+
+
+def raw_dir_is_empty(raw_dir: Path) -> bool:
+    if not raw_dir.exists():
+        return True
+    if not raw_dir.is_dir():
+        raise NotADirectoryError(f"Raw al_rcta path is not a directory: {raw_dir}")
+    return not any(raw_dir.iterdir())
+
+
+def raw_dataset_is_valid(raw_dir: Path, spec: ALRCTADatasetSpec) -> bool:
+    dataset_root = raw_dir / spec.root_dir
+    return (
+        (dataset_root / spec.main_file).exists()
+        and (dataset_root / spec.annotation_dir).is_dir()
+    )
+
+
+def checkout_pinned_commit(raw_dir: Path) -> None:
+    try:
+        run_git(["checkout", UPSTREAM_COMMIT], cwd=raw_dir)
+    except RuntimeError:
+        run_git(["fetch", "origin", UPSTREAM_COMMIT], cwd=raw_dir)
+        run_git(["checkout", UPSTREAM_COMMIT], cwd=raw_dir)
+
+
+def clone_raw_dataset(raw_dir: Path) -> None:
+    raw_dir.parent.mkdir(parents=True, exist_ok=True)
+    if raw_dir.exists():
+        raw_dir.rmdir()
+
+    print(f"Cloning {UPSTREAM_REPO_URL} -> {raw_dir}")
+    run_git(["clone", UPSTREAM_REPO_URL, str(raw_dir)])
+    checkout_pinned_commit(raw_dir)
+
+
+def prepare_raw_dataset(
+    raw_dir: Path,
+    spec: ALRCTADatasetSpec,
+    *,
+    force_download: bool,
+) -> Path:
+    if force_download:
+        print(f"Force download requested; clearing raw data under {raw_dir}")
+        if raw_dir.exists():
+            if not raw_dir.is_dir():
+                raise NotADirectoryError(
+                    f"Cannot force-download into non-directory path: {raw_dir}"
+                )
+            shutil.rmtree(raw_dir)
+
+    if raw_dir_is_empty(raw_dir):
+        clone_raw_dataset(raw_dir)
+    elif (raw_dir / ".git").is_dir():
+        print(f"Reusing raw al_rcta clone at {raw_dir}")
+        checkout_pinned_commit(raw_dir)
+    else:
+        print(f"Reusing existing raw al_rcta directory at {raw_dir}")
+
+    if not raw_dataset_is_valid(raw_dir, spec):
+        raise FileNotFoundError(
+            "Raw al_rcta directory does not contain the expected files for "
+            f"{spec.name}: {raw_dir / spec.root_dir}. If this is a partial or "
+            "stale checkout, rerun with --force-download or pass a valid "
+            "--raw-dir."
+        )
+
+    return raw_dir
 
 
 def natural_key(path: Path) -> list[object]:
@@ -675,7 +774,7 @@ def main() -> None:
     spec = DATASET_SPECS[args.dataset]
     raw_dir = (args.raw_dir or default_raw_dir(args.data_root)).expanduser().resolve()
     output_dir = (
-        args.output_dir or default_output_dir(args.data_root, spec)
+        args.output_dir or default_output_dir(args.data_root, spec, args.max_test_size)
     ).expanduser().resolve()
 
     print(f"al_rcta dataset      : {spec.name}")
@@ -683,18 +782,29 @@ def main() -> None:
     print(f"Processed output dir : {output_dir}")
     print(f"Max test size        : {args.max_test_size}")
     print(f"Test random state    : {args.test_random_state}")
+    print(f"Force download       : {args.force_download}")
+    print(f"Force rebuild        : {args.force_rebuild}")
 
-    if not raw_dir.exists():
-        raise FileNotFoundError(
-            f"Raw al_rcta directory does not exist: {raw_dir}. "
-            f"Clone {UPSTREAM_REPO_URL} there or pass --raw-dir."
+    if args.force_download:
+        raw_dir = prepare_raw_dataset(
+            raw_dir,
+            spec,
+            force_download=True,
         )
+
     if output_dir.exists() and not args.force_rebuild:
         print(
             f"Processed dataset already exists at {output_dir}; "
             "skipping rebuild. Use --force-rebuild to overwrite it."
         )
         return
+
+    if not args.force_download:
+        raw_dir = prepare_raw_dataset(
+            raw_dir,
+            spec,
+            force_download=False,
+        )
 
     dataset_dict, metadata = build_datasetdict(
         raw_dir,

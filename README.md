@@ -64,6 +64,9 @@ Helper scripts and SLURM wrappers also respect:
 - `DALC_DATA_ROOT`: overrides `paths.master_dir`
 - `DALC_RESULTS_ROOT`: overrides `paths.results_dir`
 - `DALC_REPO_ROOT`: absolute repository root used by SLURM wrappers
+- `DALC_PREP_DEVICE`: device used by preparation jobs, defaults to `cuda`
+- `DALC_FORCE_DATA_DOWNLOAD=1`: force managed raw dataset downloads to refresh
+- `DALC_FORCE_DATA_REBUILD=1`: force processed local datasets to rebuild
 - `CONDA_BASE`: optional Conda installation root if `conda` is not already on
   `PATH`
 - `CONDA_ENV_NAME`: optional environment name for SLURM wrappers, defaults to
@@ -78,6 +81,7 @@ values if the cluster uses different mount points:
 export DALC_REPO_ROOT=/home/mherde/PycharmProjects/deep-active-learning-from-multiple-annotators
 export DALC_DATA_ROOT=/home/datasets
 export DALC_RESULTS_ROOT=/home/results
+export DALC_PREP_DEVICE=cuda
 export CONDA_BASE=/home/mherde/miniconda3
 export CONDA_ENV_NAME=dalc
 
@@ -93,6 +97,8 @@ Path meanings:
   expected.
 - `DALC_RESULTS_ROOT`: experiment output root. MLflow is written under
   `${DALC_RESULTS_ROOT}/mlflow`.
+- `DALC_PREP_DEVICE`: device used for embedding and simulation-cache
+  preparation. Use `cpu` only for small smoke checks.
 - `CONDA_BASE`: Conda installation root. The Slurm wrappers source
   `${CONDA_BASE}/etc/profile.d/conda.sh` when Conda is not already available.
 - `CONDA_ENV_NAME`: Conda environment activated by the Slurm wrappers when an
@@ -181,14 +187,16 @@ sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-7 \
+  --array=0-10 \
   slurm/prepare_datasets.sbatch
 ```
 
 This preparation wrapper currently covers `audiomnist10`, `banking77`,
-`dermamnist7`, `dopanim`, `food101`, `letter26`, `skits2i14`, and `trec6`.
-DTD47 and AL-RCTA are not part of that wrapper; their features/caches are
-created by the experiment jobs unless you add dedicated preparation tasks.
+`dermamnist7`, `dopanim`, `food101`, `letter26`, `skits2i14`, `trec6`,
+`al_rcta_agnews`, `al_rcta_consumer_complaints`, and
+`al_rcta_wiki_movie_plots`. DTD47 Study 1 features/caches are not part of that
+wrapper; they are created by the experiment jobs unless you add dedicated DTD47
+preparation tasks.
 
 ## Git-Tracked Directory Overview
 
@@ -206,7 +214,6 @@ are versioned.
 | `configs/classifier` | Multi-annotator classifier definitions |
 | `configs/dataset` | Dataset source specifications |
 | `configs/embedder` | Feature extractor and embedding backends |
-| `configs/launch/methods` | Reusable manifest method definitions |
 | `configs/launch/use_cases` | Manifest use-case grids and study definitions |
 | `configs/module` | Neural module definitions such as linear and MLP heads |
 | `configs/paths` | Shared path defaults |
@@ -216,7 +223,9 @@ are versioned.
 | `configs/scorer` | Pair scoring and acquisition utility models |
 | `configs/simulation` | Simulated annotator setups |
 | `configs/simulation/profile` | Simulation difficulty/profile presets |
+| `configs/simulation/regime` | Simulation regime presets |
 | `configs/training` | Optimizer and batch-size presets |
+| `docs` | Design notes and method documentation |
 | `manifests` | Generated JSONL manifest output directory placeholder |
 | `notebooks` | Exploratory and analysis notebooks |
 | `scripts` | CLI entry points for experiments, manifest generation, MLflow setup, evaluation, and dataset preparation |
@@ -230,6 +239,7 @@ are versioned.
 | `src/scheduler` | Ratio scheduler implementations |
 | `src/scorer` | Acquisition scoring implementations |
 | `src/utils` | Seeding, evaluation, printing, and MLflow helpers |
+| `src/visualization` | Visualization helpers and interactive analysis widgets |
 
 ## Running Experiments
 
@@ -308,6 +318,48 @@ If you prepare a non-`full` variant, update
 [configs/dataset/dopanim.yaml](configs/dataset/dopanim.yaml) or override
 `dataset.source` at runtime so it points to the matching output directory.
 
+### AL-RCTA
+
+The three AL-RCTA datasets use real human annotations and therefore do not have
+matching simulation configs. Prepare one dataset with:
+
+```bash
+conda activate dalc
+python scripts/prepare_al_rcta.py --dataset agnews --max-test-size 3000
+```
+
+Available dataset names are `agnews`, `consumer_complaints`, and
+`wiki_movie_plots`. With the current defaults, the script resolves:
+
+- `--data-root`: `DALC_DATA_ROOT` when set, otherwise `paths.master_dir`
+- `--raw-dir`: `<data-root>/raw/al_rcta`
+- `--output-dir`: `<data-root>/al_rcta_<dataset>_test3000` when
+  `--max-test-size 3000` is set
+
+If the raw directory is missing or empty, the script clones
+`https://github.com/varuntotakura/al_rcta` and checks out commit
+`13f30c3e5641da0c9c7196d6313ed76288473a8e`. Existing valid raw data is reused.
+Existing processed `DatasetDict` directories are skipped unless
+`--force-rebuild` is set. Automatic download requires `git`; otherwise,
+pre-populate the raw directory and pass `--raw-dir` if it is not in the default
+location.
+
+Useful parameters:
+
+- `--force-download`: delete and re-clone the managed raw AL-RCTA repository
+- `--force-rebuild`: overwrite the processed `DatasetDict`
+- `--raw-dir PATH`: use a pre-populated local clone or extracted copy
+- `--output-dir PATH`: write to an explicit processed dataset directory
+
+The dataset configs expect these processed directories:
+
+- [configs/dataset/al_rcta_agnews.yaml](configs/dataset/al_rcta_agnews.yaml):
+  `${paths.master_dir}/al_rcta_agnews_test3000`
+- [configs/dataset/al_rcta_consumer_complaints.yaml](configs/dataset/al_rcta_consumer_complaints.yaml):
+  `${paths.master_dir}/al_rcta_consumer_complaints_test3000`
+- [configs/dataset/al_rcta_wiki_movie_plots.yaml](configs/dataset/al_rcta_wiki_movie_plots.yaml):
+  `${paths.master_dir}/al_rcta_wiki_movie_plots_test3000`
+
 ### Cached Embeddings And Simulated Multi-Annotator Labels
 
 The batch entry point for preparing cached artifacts is
@@ -329,10 +381,19 @@ array definition prepares exactly these datasets:
   embedder `wavlm`
 - `7`: `trec6` with classification embedder `mpnetv2` and simulation embedder
   `minilmv2`
+- `8`: `al_rcta_agnews` with classification embedder `mpnetv2` and real
+  annotator labels
+- `9`: `al_rcta_consumer_complaints` with classification embedder `mpnetv2` and
+  real annotator labels
+- `10`: `al_rcta_wiki_movie_plots` with classification embedder `mpnetv2` and
+  real annotator labels
 
 For `dopanim`, the script runs `scripts/prepare_dopanim.py --variant full`
-before preparing cached embeddings. For `letter26`, the helper uses the
-tabular identity embedder for both classification and simulation.
+before preparing cached embeddings. For AL-RCTA, the script runs
+`scripts/prepare_al_rcta.py --max-test-size 3000` with output directories that
+match the dataset configs before preparing cached embeddings. For `letter26`,
+the helper uses the tabular identity embedder for both classification and
+simulation.
 
 Submit the full SLURM array with:
 
@@ -344,9 +405,22 @@ sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-7 \
+  --array=0-10 \
   slurm/prepare_datasets.sbatch
 ```
+
+The preparation wrapper is safe to rerun in the normal case. Existing processed
+DOPAnim and AL-RCTA directories are skipped, and existing raw downloads are
+reused. To refresh managed raw downloads or rebuild processed local datasets,
+set these flags before submission:
+
+```bash
+export DALC_FORCE_DATA_DOWNLOAD=1
+export DALC_FORCE_DATA_REBUILD=1
+```
+
+Avoid submitting duplicate preparation jobs for the same array task at the same
+time, because concurrent writes to the same raw/output/cache directory can race.
 
 You can pass a specific Python executable as the first positional argument:
 
@@ -355,7 +429,7 @@ sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
-  --array=0-7 \
+  --array=0-10 \
   slurm/prepare_datasets.sbatch \
   /path/to/python
 ```
@@ -370,7 +444,7 @@ SLURM_ARRAY_TASK_ID=2 bash slurm/prepare_datasets.sbatch
 Run all currently configured preparation tasks locally:
 
 ```bash
-for i in {0..7}; do
+for i in {0..10}; do
   SLURM_ARRAY_TASK_ID=$i bash slurm/prepare_datasets.sbatch
 done
 ```
@@ -380,9 +454,9 @@ done
 The repository contains a manifest workflow for reproducible experiment grids.
 The relevant inputs live in:
 
-- [configs/launch/methods](configs/launch/methods): reusable method definitions
 - [configs/launch/use_cases](configs/launch/use_cases): study-specific Cartesian
-  products over datasets, seeds, methods, and other factors
+  products over datasets, seeds, methods, constraints, classifiers, and other
+  factors
 
 The basic flow is:
 
@@ -393,7 +467,7 @@ The basic flow is:
 Generate a manifest:
 
 ```bash
-python scripts/generate_manifest.py annotator_selection_main
+python scripts/generate_manifest.py blga_main_benchmark
 ```
 
 By default, this writes `manifests/<use_case>.jsonl` and prints a short preview
@@ -403,7 +477,7 @@ Execute one row locally:
 
 ```bash
 python scripts/run_manifest_row.py \
-  --manifest manifests/annotator_selection_main.jsonl \
+  --manifest manifests/blga_main_benchmark.jsonl \
   --row 0
 ```
 
@@ -411,7 +485,7 @@ Append extra Hydra overrides after the manifest row:
 
 ```bash
 python scripts/run_manifest_row.py \
-  --manifest manifests/annotator_selection_main.jsonl \
+  --manifest manifests/blga_main_benchmark.jsonl \
   --row 0 \
   --override paths.master_dir=/path/to/data/root \
   --override paths.results_dir=/path/to/results/root
@@ -426,26 +500,26 @@ The batch wrapper is
 Generate the manifest first:
 
 ```bash
-python scripts/generate_manifest.py annotator_selection_main
+python scripts/generate_manifest.py blga_main_benchmark
 ```
 
 Determine the number of rows:
 
 ```bash
-wc -l manifests/annotator_selection_main.jsonl
+wc -l manifests/blga_main_benchmark.jsonl
 ```
 
 Submit one SLURM task per manifest row:
 
 ```bash
-ROWS=$(wc -l < manifests/annotator_selection_main.jsonl)
+ROWS=$(wc -l < manifests/blga_main_benchmark.jsonl)
 sbatch \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
   --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
-  manifests/annotator_selection_main.jsonl
+  manifests/blga_main_benchmark.jsonl
 ```
 
 Pass a custom Python executable as the second positional argument if needed:
@@ -457,18 +531,11 @@ sbatch \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
   --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
-  manifests/annotator_selection_main.jsonl \
+  manifests/blga_main_benchmark.jsonl \
   /path/to/python
 ```
 
 ### Manifest Schema Summary
-
-Each method file in `configs/launch/methods` is a JSON object with:
-
-- `name`: stable method identifier
-- `description`: short human-readable summary
-- `tags`: optional metadata copied into manifest rows
-- `overrides`: Hydra CLI overrides applied to each run
 
 Each use-case file in `configs/launch/use_cases` is a JSON object with:
 
@@ -482,7 +549,12 @@ Supported axis types are:
 
 - `template`: render override templates for each value
 - `choices`: pick overrides and tags from a named mapping
-- `registry`: load method definitions from `methods/*.json`
+- `registry`: load method definitions from `configs/launch/methods` if that
+  optional directory is present
+
+The current BLGA use cases use inline `choices` axes. Some historical
+use-cases may still reference `registry` axes; those require matching method
+definition files before they can be generated.
 
 ## Optional MLflow Setup Step
 
@@ -498,7 +570,7 @@ Prepare an experiment locally:
 ```bash
 conda activate dalc
 python scripts/setup_mlflow.py \
-  --experiment-name good_pot_bad_crop
+  --experiment-name blga_main_benchmark
 ```
 
 The matching SLURM wrapper is
@@ -510,7 +582,7 @@ sbatch \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
   slurm/setup_mlflow.sbatch \
-  good_pot_bad_crop
+  blga_main_benchmark
 ```
 
 You can optionally pass a custom results path and Python executable:
@@ -521,7 +593,7 @@ sbatch \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
   slurm/setup_mlflow.sbatch \
-  good_pot_bad_crop \
+  blga_main_benchmark \
   /path/to/mlflow \
   /path/to/python
 ```
@@ -534,13 +606,13 @@ SETUP_JOB_ID=$(sbatch --parsable \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%j.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%j.err" \
-  slurm/setup_mlflow.sbatch good_pot_bad_crop)
-ROWS=$(wc -l < manifests/good_pot_bad_crop.jsonl)
+  slurm/setup_mlflow.sbatch blga_main_benchmark)
+ROWS=$(wc -l < manifests/blga_main_benchmark.jsonl)
 sbatch --dependency=afterok:${SETUP_JOB_ID} \
   --chdir="${DALC_REPO_ROOT}" \
   --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
   --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
   --array=0-$((ROWS-1)) \
   slurm/run_manifest_array.sbatch \
-  manifests/good_pot_bad_crop.jsonl
+  manifests/blga_main_benchmark.jsonl
 ```

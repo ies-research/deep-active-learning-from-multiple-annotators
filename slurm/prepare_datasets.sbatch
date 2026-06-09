@@ -7,7 +7,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-  echo "Usage: sbatch --array=0-7 slurm/prepare_datasets.sbatch [python_executable]" >&2
+  echo "Usage: sbatch --array=0-10 slurm/prepare_datasets.sbatch [python_executable]" >&2
   exit 1
 fi
 
@@ -19,6 +19,8 @@ mkdir -p slurm/logs
 DATA_ROOT="${DALC_DATA_ROOT:-}"
 RESULTS_ROOT="${DALC_RESULTS_ROOT:-${DALCE_RESULTS_ROOT:-}}"
 PREP_DEVICE="${DALC_PREP_DEVICE:-cuda}"
+FORCE_DATA_DOWNLOAD="${DALC_FORCE_DATA_DOWNLOAD:-0}"
+FORCE_DATA_REBUILD="${DALC_FORCE_DATA_REBUILD:-0}"
 
 PYTHON_BIN="${1:-python}"
 
@@ -43,6 +45,9 @@ DATASETS=(
   "letter26"
   "skits2i14"
   "trec6"
+  "al_rcta_agnews"
+  "al_rcta_consumer_complaints"
+  "al_rcta_wiki_movie_plots"
 )
 
 CLASSIFICATION_EMBEDDERS=(
@@ -53,6 +58,9 @@ CLASSIFICATION_EMBEDDERS=(
   "dinov2"
   "identity_tabular"
   "wav2vec"
+  "mpnetv2"
+  "mpnetv2"
+  "mpnetv2"
   "mpnetv2"
 )
 
@@ -65,6 +73,9 @@ SIMULATION_EMBEDDERS=(
   "identity_tabular"
   "wavlm"
   "minilmv2"
+  "null"
+  "null"
+  "null"
 )
 
 SIMULATION_CONFIGS=(
@@ -76,6 +87,9 @@ SIMULATION_CONFIGS=(
   "letter26"
   "skits2i14"
   "trec6"
+  "null"
+  "null"
+  "null"
 )
 
 PREP_STEPS=(
@@ -87,6 +101,9 @@ PREP_STEPS=(
   "none"
   "none"
   "none"
+  "prepare_al_rcta:agnews"
+  "prepare_al_rcta:consumer_complaints"
+  "prepare_al_rcta:wiki_movie_plots"
 )
 
 TASK_INDEX="${SLURM_ARRAY_TASK_ID}"
@@ -111,6 +128,34 @@ if [[ "${PREP_STEP}" == "prepare_dopanim" ]]; then
   )
   if [[ -n "${DATA_ROOT}" ]]; then
     PREP_CMD+=(--data-root "${DATA_ROOT}")
+  fi
+  if [[ "${FORCE_DATA_DOWNLOAD}" == "1" ]]; then
+    PREP_CMD+=(--force-download)
+  fi
+  if [[ "${FORCE_DATA_REBUILD}" == "1" ]]; then
+    PREP_CMD+=(--force-rebuild)
+  fi
+  "${PREP_CMD[@]}"
+fi
+
+if [[ "${PREP_STEP}" == prepare_al_rcta:* ]]; then
+  AL_RCTA_DATASET="${PREP_STEP#prepare_al_rcta:}"
+  AL_RCTA_OUTPUT_ROOT="${DATA_ROOT:-/home/datasets}"
+  echo ">>> Preparing raw ${DATASET} dataset from al_rcta/${AL_RCTA_DATASET}"
+  PREP_CMD=(
+    "${PYTHON_BIN}" "${REPO_ROOT}/scripts/prepare_al_rcta.py"
+    --dataset "${AL_RCTA_DATASET}"
+    --max-test-size 3000
+    --output-dir "${AL_RCTA_OUTPUT_ROOT}/${DATASET}_test3000"
+  )
+  if [[ -n "${DATA_ROOT}" ]]; then
+    PREP_CMD+=(--data-root "${DATA_ROOT}")
+  fi
+  if [[ "${FORCE_DATA_DOWNLOAD}" == "1" ]]; then
+    PREP_CMD+=(--force-download)
+  fi
+  if [[ "${FORCE_DATA_REBUILD}" == "1" ]]; then
+    PREP_CMD+=(--force-rebuild)
   fi
   "${PREP_CMD[@]}"
 fi

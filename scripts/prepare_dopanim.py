@@ -508,6 +508,15 @@ def main() -> None:
     print(f"DOPAnim variant      : {args.variant}")
     print(f"Raw directory        : {raw_dir}")
     print(f"Processed output dir : {output_dir}")
+    print(f"Force download       : {args.force_download}")
+    print(f"Force rebuild        : {args.force_rebuild}")
+
+    dataset_root = None
+    if args.force_download:
+        dataset_root = prepare_raw_dataset(
+            raw_dir,
+            force_download=True,
+        )
 
     if output_dir.exists() and not args.force_rebuild:
         print(
@@ -516,10 +525,11 @@ def main() -> None:
         )
         return
 
-    dataset_root = prepare_raw_dataset(
-        raw_dir,
-        force_download=args.force_download,
-    )
+    if dataset_root is None:
+        dataset_root = prepare_raw_dataset(
+            raw_dir,
+            force_download=False,
+        )
     print(f"Building DatasetDict for variant {args.variant}")
     dataset_dict = build_datasetdict(dataset_root, variant=args.variant)
     save_datasetdict(
