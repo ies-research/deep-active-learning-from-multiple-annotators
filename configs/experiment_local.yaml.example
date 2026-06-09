@@ -1,44 +1,47 @@
 defaults:
-  - al: trec6
+  - al: al_rcta_wiki_movie_plots
   - classifier: geo_reg_f
   - paths: default
-  - dataset: trec6
+  - dataset: al_rcta_wiki_movie_plots
   - embedder@classification_embedder: mpnetv2
-  - embedder@simulation_embedder: minilmv2
+  - embedder@simulation_embedder: mpnetv2
   - pipeline: default
-  - simulation: trec6
+  - simulation: null
   - module: mlp
   - training: default
   - scheduler: step_ratio_1
   - sample@sample.init: random
   - sample@sample.actual: random
   - scorer@scorer.init: random
-  - scorer@scorer.actual: random
+  - scorer@scorer.actual: agreement_global
   - assigner@assigner.init: quota_sample
   - assigner@assigner.actual: optimal_sample_loose_cap
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
   - _self_
-experiment_name: "default"
+
+experiment_name: "local_test"
 results_path: ${paths.results_path}
 mlflow_write_jitter_max_seconds: 60.0
-device: "cpu"
+device: "cuda"
 missing_label: -1
 exit_after_simulation: false
-seed: 0
+seed: 3
+
 utility_tsne:
   enabled: false
   cycles: [0, 5, 10, 15, 20]
-  annotator_indices: []
+  annotator_indices: [13, 11]
   max_background_points: 2000
   perplexity: 30
   random_state: ${seed}
   output_dir: figures/utility_tsne
   file_format: png
   dpi: 160
+
 annotator_behavior_tsne:
   enabled: false
-  annotator_indices: []
+  annotator_indices: [5] # [] means all annotators
   max_points: 2000
   stratify_by_true_class: true
   feature_preprocess: auto
@@ -47,6 +50,7 @@ annotator_behavior_tsne:
   output_dir: figures/annotator_behavior_tsne
   file_format: png
   dpi: 160
+
 hydra:
   run:
     dir: .

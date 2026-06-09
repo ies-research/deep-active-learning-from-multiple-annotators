@@ -1,5 +1,6 @@
 # Individual paths
 manifests/*.jsonl
+configs/experiment_local.yaml
 .codex
 .vscode/
 .pytest_cache/

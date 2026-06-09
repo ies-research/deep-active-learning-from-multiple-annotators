@@ -258,6 +258,30 @@ python scripts/experiment.py \
   al=trec6
 ```
 
+[configs/experiment.yaml](configs/experiment.yaml) is the committed stable base
+configuration used by direct runs, helper scripts, and manifest rows before
+Hydra overrides are applied. Keep local scratch settings out of this file so
+benchmark and ablation manifests cannot inherit accidental playground defaults.
+
+For local experiments, use the ignored scratch config
+`configs/experiment_local.yaml`:
+
+```bash
+cp configs/experiment_local.yaml.example configs/experiment_local.yaml
+python scripts/experiment.py --config-name experiment_local
+```
+
+That local config can be edited freely without adding commit noise. This
+checkout already contains one; the copy command is only needed in a fresh clone
+or after deleting your local file. You can still append normal Hydra overrides,
+for example:
+
+```bash
+python scripts/experiment.py --config-name experiment_local \
+  dataset=trec6 \
+  simulation=trec6
+```
+
 You can override any Hydra value on the command line, for example:
 
 ```bash
