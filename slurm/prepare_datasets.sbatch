@@ -14,6 +14,8 @@ fi
 REPO_ROOT="${DALC_REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 cd "${REPO_ROOT}"
 
+source "${REPO_ROOT}/slurm/_conda.sh"
+
 mkdir -p slurm/logs
 
 DATA_ROOT="${DALC_DATA_ROOT:-}"
@@ -25,15 +27,7 @@ FORCE_DATA_REBUILD="${DALC_FORCE_DATA_REBUILD:-0}"
 PYTHON_BIN="${1:-python}"
 
 if [[ $# -lt 1 ]]; then
-  if [[ -n "${CONDA_BASE:-}" ]]; then
-    source "${CONDA_BASE}/etc/profile.d/conda.sh"
-  elif command -v conda >/dev/null 2>&1; then
-    eval "$(conda shell.bash hook)"
-  else
-    echo "Could not find conda. Set CONDA_BASE or pass an explicit Python executable." >&2
-    exit 1
-  fi
-  conda activate "${CONDA_ENV_NAME:-dalc}"
+  activate_dalc_conda_env
 fi
 
 DATASETS=(

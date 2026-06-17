@@ -78,11 +78,12 @@ Set these paths once in the shell where you submit jobs. Adjust the example
 values if the cluster uses different mount points:
 
 ```bash
-export DALC_REPO_ROOT=/home/mherde/PycharmProjects/deep-active-learning-from-multiple-annotators
-export DALC_DATA_ROOT=/home/datasets
-export DALC_RESULTS_ROOT=/home/results
+export DALC_REPO_ROOT=/mnt/home/mherde/projects/github/deep-active-learning-from-multiple-annotators
+export DALC_DATA_ROOT=/mnt/work/mherde/deep-active-learning-from-multiple-annotators
+export DALC_RESULTS_ROOT=/mnt/work/mherde/deep-active-learning-from-multiple-annotators
 export DALC_PREP_DEVICE=cuda
-export CONDA_BASE=/home/mherde/miniconda3
+# Optional; omit this when `conda` is already available on PATH.
+export CONDA_BASE=/mnt/home/mherde/miniconda3 
 export CONDA_ENV_NAME=dalc
 
 cd "${DALC_REPO_ROOT}"
@@ -558,6 +559,39 @@ sbatch \
   manifests/blga_main_benchmark.jsonl \
   /path/to/python
 ```
+
+### Resubmitting Missing Manifest Rows
+
+Use [scripts/check_mlflow_use_case_coverage.py](scripts/check_mlflow_use_case_coverage.py)
+to compare a launch use-case against finished runs in the MLflow SQLite DB. The
+script writes both a missing-runs use-case JSON and a missing-only JSONL manifest
+that can be submitted with the same Slurm wrapper.
+
+```bash
+USE_CASE=blga_main_benchmark
+DB_PATH=mlflow/mlruns_blga_main_benchmark.db
+MISSING_USE_CASE="configs/launch/use_cases/${USE_CASE}_missing.json"
+MISSING_MANIFEST="manifests/${USE_CASE}_missing.jsonl"
+
+python scripts/check_mlflow_use_case_coverage.py \
+  --db-path "${DB_PATH}" \
+  --use-case "${USE_CASE}" \
+  --output "${MISSING_USE_CASE}" \
+  --manifest-output "${MISSING_MANIFEST}" \
+  --exit-zero-if-missing
+
+ROWS=$(wc -l < "${MISSING_MANIFEST}")
+sbatch \
+  --chdir="${DALC_REPO_ROOT}" \
+  --output="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.out" \
+  --error="${DALC_REPO_ROOT}/slurm/logs/%x_%A_%a.err" \
+  --array=0-$((ROWS-1)) \
+  slurm/run_manifest_array.sbatch \
+  "${MISSING_MANIFEST}"
+```
+
+Only `FINISHED` MLflow runs count as covered. Failed, killed, running, and
+absent rows are written to the missing manifest.
 
 ### Manifest Schema Summary
 

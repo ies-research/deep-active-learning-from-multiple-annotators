@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src._manifest import (
+    DEFAULT_MANIFEST_DIR,
     DEFAULT_METHOD_DIR,
     DEFAULT_USE_CASE_DIR,
     build_rows,
@@ -39,6 +41,7 @@ LOGGED_OVERRIDE_PREFIXES = (
     "training",
     "seed",
 )
+MISSING_PARAM_VALUE = "<__DALC_MISSING_PARAM__>"
 
 
 @dataclass(frozen=True)
@@ -254,15 +257,84 @@ def compile_row_predicates(hydra_overrides: Sequence[str]) -> list[OverridePredi
     ]
 
 
+def canonical_constraints(
+    predicates: Sequence[OverridePredicate],
+    observed_keys: set[str],
+) -> tuple[tuple[str, str], ...]:
+    constraints: list[tuple[str, str]] = []
+    for predicate in predicates:
+        observed_candidates = [
+            key for key in predicate.candidate_keys if key in observed_keys
+        ]
+
+        if predicate.is_delete:
+            constraints.extend(
+                (key, MISSING_PARAM_VALUE) for key in observed_candidates
+            )
+            continue
+
+        key = (
+            observed_candidates[0]
+            if observed_candidates
+            else predicate.candidate_keys[0]
+        )
+        if predicate.expected_value is None:
+            raise ValueError(
+                f"Non-delete predicate has no expected value: {predicate.raw_override!r}"
+            )
+        constraints.append((key, predicate.expected_value))
+
+    by_key: dict[str, str] = {}
+    for key, expected_value in constraints:
+        previous = by_key.get(key)
+        if previous is not None and previous != expected_value:
+            raise ValueError(
+                f"Conflicting expected values for MLflow param {key!r}: "
+                f"{previous!r} vs {expected_value!r}"
+            )
+        by_key[key] = expected_value
+    return tuple(sorted(by_key.items()))
+
+
+def observed_signature(
+    params: dict[str, str],
+    keys: Sequence[str],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (key, normalize_value(params.get(key, MISSING_PARAM_VALUE)))
+        for key in keys
+    )
+
+
 def find_missing_rows(expected_rows: Sequence[dict], observed_runs: Sequence[ObservedRun]) -> list[dict]:
-    observed_params = [run.params for run in observed_runs]
-    missing_rows = []
+    observed_keys = {
+        key
+        for run in observed_runs
+        for key in run.params
+    }
+
+    row_constraints = []
+    key_tuples = set()
     for row in expected_rows:
         predicates = compile_row_predicates(row["hydra_overrides"])
-        if not predicates:
+        constraints = canonical_constraints(predicates, observed_keys)
+        key_tuple = tuple(key for key, _ in constraints)
+        row_constraints.append((row, constraints, key_tuple))
+        key_tuples.add(key_tuple)
+
+    observed_by_key_tuple: dict[tuple[str, ...], set[tuple[tuple[str, str], ...]]] = {}
+    for key_tuple in key_tuples:
+        observed_by_key_tuple[key_tuple] = {
+            observed_signature(run.params, key_tuple)
+            for run in observed_runs
+        }
+
+    missing_rows = []
+    for row, constraints, key_tuple in row_constraints:
+        if not constraints:
             missing_rows.append(row)
             continue
-        if not any(row_matches_run_params(predicates, params) for params in observed_params):
+        if constraints not in observed_by_key_tuple[key_tuple]:
             missing_rows.append(row)
     return missing_rows
 
@@ -273,6 +345,13 @@ def write_missing_use_case(output_path: Path, payload: dict) -> None:
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def write_missing_manifest(output_path: Path, missing_rows: Sequence[dict]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as fh:
+        for row in missing_rows:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -299,6 +378,33 @@ def build_parser() -> argparse.ArgumentParser:
             "Defaults to <use_case_stem>_missing.json next to the original file."
         ),
     )
+    parser.add_argument(
+        "--manifest-output",
+        help=(
+            "Optional JSONL manifest path for missing rows. Defaults to "
+            "manifests/<use_case_name>_missing.jsonl. Pass --no-manifest-output "
+            "to skip writing it."
+        ),
+    )
+    parser.add_argument(
+        "--no-manifest-output",
+        action="store_true",
+        help="Do not write a missing-row JSONL manifest.",
+    )
+    parser.add_argument(
+        "--preview",
+        type=int,
+        default=5,
+        help="How many missing run IDs to print.",
+    )
+    parser.add_argument(
+        "--exit-zero-if-missing",
+        action="store_true",
+        help=(
+            "Return exit code 0 even if missing runs are found. Useful when "
+            "the command is part of a resubmission shell script."
+        ),
+    )
     return parser
 
 
@@ -319,6 +425,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(args.output).expanduser().resolve()
             if args.output
             else use_case_path.with_name(f"{use_case_path.stem}_missing.json")
+        )
+        manifest_output_path = (
+            None
+            if args.no_manifest_output
+            else (
+                Path(args.manifest_output).expanduser().resolve()
+                if args.manifest_output
+                else (
+                    DEFAULT_MANIFEST_DIR / f"{use_case_cfg['name']}_missing.jsonl"
+                ).resolve()
+            )
         )
 
         conn = sqlite3.connect(str(db_path))
@@ -350,12 +467,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = build_missing_use_case(use_case_cfg, missing_rows)
             write_missing_use_case(output_path, payload)
             print(f"Missing use case   : {output_path}")
+            if manifest_output_path is not None:
+                write_missing_manifest(manifest_output_path, missing_rows)
+                print(f"Missing manifest   : {manifest_output_path}")
+                print(f"Manifest rows      : {len(missing_rows)}")
+                quoted_manifest = shlex.quote(str(manifest_output_path))
+                print(f"Rows command       : ROWS=$(wc -l < {quoted_manifest})")
+                print(
+                    "Slurm array        : "
+                    "sbatch --array=0-$((ROWS-1)) "
+                    "slurm/run_manifest_array.sbatch "
+                    f"{quoted_manifest}"
+                )
             print("Missing preview    :")
-            for row in missing_rows[:5]:
+            for row in missing_rows[: max(args.preview, 0)]:
                 print(f"  - {row['run_id']}")
-            return 1
+            return 0 if args.exit_zero_if_missing else 1
 
         print("Missing use case   : none written")
+        print("Missing manifest   : none written")
         return 0
 
     except (FileNotFoundError, KeyError, sqlite3.Error, ValueError) as exc:
